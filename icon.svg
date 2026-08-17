@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title description">
+  <title id="title">Home Battery Runtime icon</title>
+  <desc id="description">A partially charged home battery combined with a clock.</desc>
+  <defs>
+    <linearGradient id="background" x1="96" y1="72" x2="416" y2="440" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#173B4D"/>
+      <stop offset="1" stop-color="#0A1C28"/>
+    </linearGradient>
+    <linearGradient id="charge" x1="108" y1="176" x2="250" y2="336" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#66E3B4"/>
+      <stop offset="1" stop-color="#22B8A7"/>
+    </linearGradient>
+    <clipPath id="battery-interior">
+      <rect x="106" y="180" width="270" height="152" rx="26"/>
+    </clipPath>
+  </defs>
+
+  <circle cx="256" cy="256" r="238" fill="url(#background)"/>
+  <circle cx="256" cy="256" r="231" fill="none" stroke="#235066" stroke-width="8"/>
+
+  <rect x="82" y="156" width="320" height="200" rx="48" fill="#0A1C28" stroke="#F5F7F2" stroke-width="26"/>
+  <rect x="399" y="218" width="35" height="76" rx="12" fill="#F5F7F2"/>
+  <g clip-path="url(#battery-interior)">
+    <rect x="106" y="180" width="142" height="152" fill="url(#charge)"/>
+    <path d="M248 180v152" fill="none" stroke="#8AF0CB" stroke-width="8" opacity="0.5"/>
+  </g>
+
+  <circle cx="314" cy="256" r="91" fill="#102A38" stroke="#F5F7F2" stroke-width="22"/>
+  <path d="M314 191v14M379 256h-14M314 321v-14M249 256h14" fill="none" stroke="#66E3B4" stroke-linecap="round" stroke-width="10"/>
+  <path d="M314 256v-43M314 256l39 26" fill="none" stroke="#FFD166" stroke-linecap="round" stroke-linejoin="round" stroke-width="18"/>
+  <circle cx="314" cy="256" r="12" fill="#FFD166"/>
+</svg>

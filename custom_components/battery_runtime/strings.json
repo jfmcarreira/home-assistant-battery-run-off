@@ -1,0 +1,97 @@
+{
+  "title": "Home Battery Runtime",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Configure battery runtime",
+        "description": "Select sensors for this battery. The home consumption sensor must report non-negative whole-home demand, not grid import or export. Capacity must be the usable, deliverable energy from 0% to 100% at the same measurement boundary as the battery power sensor.",
+        "data": {
+          "name": "Name",
+          "battery_soc_entity": "Battery state of charge",
+          "home_consumption_entity": "Home consumption power",
+          "battery_power_entity": "Battery power",
+          "capacity_kwh": "Battery capacity",
+          "reserve_soc": "Reserve state of charge",
+          "battery_power_sign": "Battery discharge sign",
+          "discharge_threshold_w": "Discharge threshold"
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigure battery runtime",
+        "description": "Changing a source entity or the battery discharge sign resets learned history. Changing the name, capacity, reserve, or discharge threshold preserves learned history.",
+        "data": {
+          "name": "Name",
+          "battery_soc_entity": "Battery state of charge",
+          "home_consumption_entity": "Home consumption power",
+          "battery_power_entity": "Battery power",
+          "capacity_kwh": "Battery capacity",
+          "reserve_soc": "Reserve state of charge",
+          "battery_power_sign": "Battery discharge sign",
+          "discharge_threshold_w": "Discharge threshold"
+        }
+      }
+    },
+    "error": {
+      "already_configured": "A battery runtime entry already uses this battery state-of-charge and battery power entity pair.",
+      "empty_name": "Enter a name.",
+      "entity_not_found": "The selected entity does not currently exist.",
+      "entity_not_numeric": "The selected entity must currently have a finite numeric value.",
+      "invalid_capacity": "Capacity must be a finite value greater than 0 kWh.",
+      "invalid_entity": "Select a sensor entity.",
+      "invalid_power_sign": "Select whether positive or negative battery power means discharge.",
+      "invalid_power_unit": "The selected power entity must use W or kW.",
+      "invalid_reserve": "Reserve state of charge must be between 0% and 99%.",
+      "invalid_soc_unit": "The battery state of charge entity must use %.",
+      "invalid_soc_value": "The battery state of charge must currently be between 0% and 100%.",
+      "invalid_threshold": "The discharge threshold must be a finite value of 0 W or greater.",
+      "negative_home_consumption": "Home consumption must currently be non-negative. Select a whole-home demand sensor rather than grid import or export."
+    },
+    "abort": {
+      "already_configured": "A battery runtime entry already uses this battery state-of-charge and battery power entity pair.",
+      "reconfigure_successful": "Battery runtime configuration updated."
+    }
+  },
+  "selector": {
+    "battery_power_sign": {
+      "options": {
+        "positive": "Positive means discharge",
+        "negative": "Negative means discharge"
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "estimated_depletion_time": {
+        "name": "Estimated battery depletion time"
+      },
+      "estimated_runtime": {
+        "name": "Estimated battery runtime"
+      },
+      "prediction_status": {
+        "name": "Prediction status",
+        "state": {
+          "discharging": "Discharging",
+          "idle": "Idle",
+          "charging": "Charging",
+          "learning": "Learning",
+          "source_unavailable": "Source unavailable",
+          "beyond_horizon": "Beyond forecast horizon"
+        }
+      },
+      "prediction_confidence": {
+        "name": "Prediction confidence",
+        "state": {
+          "low": "Low",
+          "medium": "Medium",
+          "high": "High"
+        }
+      },
+      "history_coverage": {
+        "name": "History coverage"
+      },
+      "forecast_average_discharge": {
+        "name": "Forecast average discharge"
+      }
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "domain": "battery_runtime",
+  "name": "Home Battery Runtime",
+  "after_dependencies": ["recorder"],
+  "codeowners": [],
+  "config_flow": true,
+  "dependencies": [],
+  "integration_type": "helper",
+  "iot_class": "calculated",
+  "requirements": [],
+  "version": "0.1.0"
+}

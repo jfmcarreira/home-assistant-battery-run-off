@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.python-version
+.venv/
+venv/
+
+# Test and quality-tool output
+.coverage
+.coverage.*
+.pytest_cache/
+.ruff_cache/
+coverage.xml
+htmlcov/
+
+# Home Assistant local development data
+.storage/
+config/
+deps/
+home-assistant.log*
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Local JavaScript tooling
+node_modules/

@@ -1,0 +1,5 @@
+{
+  "homeassistant": "2026.8.0",
+  "name": "Home Battery Runtime",
+  "render_readme": true
+}
