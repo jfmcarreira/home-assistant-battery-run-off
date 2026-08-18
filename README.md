@@ -7,9 +7,7 @@ profile. No cloud service, external API, telemetry, or machine-learning library
 is required.
 
 > [!IMPORTANT]
-> This integration is not published yet. Its final GitHub URL and code owner are
-> still publication prerequisites. The integration requires Home Assistant
-> `2026.8.0` or newer and is expected to begin at version `0.1.0`.
+> This integration requires Home Assistant `2026.8.0` or newer.
 
 The forecast is conditional: it answers **when the battery would reach reserve
 if active discharge continues**. It does not predict future solar production,
@@ -19,17 +17,14 @@ charging, or a scheduled change in battery operating mode.
 
 ### HACS
 
-HACS custom-repository installation will be available after the repository has
-a public GitHub URL. A tagged release will be created before submission for
-default HACS inclusion.
+Install the integration as a HACS custom repository:
 
 1. Open HACS in Home Assistant.
 2. Open the three-dot menu and select **Custom repositories**.
-3. Enter this repository's final GitHub URL and select **Integration**.
+3. Enter
+   `https://github.com/jfmcarreira/home-assistant-battery-run-off` and select
+   **Integration**.
 4. Select **Download**, then restart Home Assistant.
-
-The repository URL is intentionally not shown as a placeholder because it has
-not been assigned.
 
 ### Manual
 

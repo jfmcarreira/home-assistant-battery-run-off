@@ -2,11 +2,13 @@
   "domain": "battery_runtime",
   "name": "Home Battery Runtime",
   "after_dependencies": ["recorder"],
-  "codeowners": [],
+  "codeowners": ["@jfmcarreira"],
   "config_flow": true,
   "dependencies": [],
+  "documentation": "https://github.com/jfmcarreira/home-assistant-battery-run-off",
   "integration_type": "helper",
   "iot_class": "calculated",
+  "issue_tracker": "https://github.com/jfmcarreira/home-assistant-battery-run-off/issues",
   "requirements": [],
   "version": "0.1.0"
 }
