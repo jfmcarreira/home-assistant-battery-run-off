@@ -1,0 +1,45 @@
+name: Release Creation
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  tests:
+    uses: ./.github/workflows/tests.yml
+    permissions:
+      contents: read
+
+  hassfest:
+    uses: ./.github/workflows/hassfest.yml
+    permissions:
+      contents: read
+
+  hacs:
+    uses: ./.github/workflows/hacs.yml
+    permissions:
+      contents: read
+
+  release:
+    needs: [tests, hassfest, hacs]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Verify tag matches integration version
+        run: |
+          version=$(python -c "import json; print(json.load(open('custom_components/battery_runtime/manifest.json'))['version'])")
+          expected_tag="v$version"
+          if [ "$GITHUB_REF_NAME" != "$expected_tag" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match manifest version $expected_tag." >&2
+            exit 1
+          fi
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --generate-notes --title "$GITHUB_REF_NAME"

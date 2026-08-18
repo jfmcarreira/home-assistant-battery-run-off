@@ -2,10 +2,13 @@ name: Hassfest
 
 on:
   push:
+    branches:
+      - "**"
   pull_request:
   schedule:
     - cron: "0 0 * * *"
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
