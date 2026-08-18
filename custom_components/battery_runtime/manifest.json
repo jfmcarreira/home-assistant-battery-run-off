@@ -6,9 +6,9 @@
   "config_flow": true,
   "dependencies": [],
   "documentation": "https://github.com/jfmcarreira/home-assistant-battery-run-off",
-  "integration_type": "helper",
+  "integration_type": "device",
   "iot_class": "calculated",
   "issue_tracker": "https://github.com/jfmcarreira/home-assistant-battery-run-off/issues",
   "requirements": [],
-  "version": "0.1.0"
+  "version": "0.1.1"
 }
