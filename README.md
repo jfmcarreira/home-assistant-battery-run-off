@@ -131,12 +131,15 @@ profile-based forecast, each future baseline is:
 baseline_discharge_w = historical_home_load_w * learned_battery_share
 ```
 
-The model chooses weekday or weekend history for each future local date. It
-blends current battery power into the first 30 minutes, then decays the effect of
-current home-load conditions toward the learned profile over about two hours.
-Predicted watts are integrated in five-minute steps and converted to kWh. The
-final step is interpolated to produce a more precise depletion timestamp, and
-forecasting stops after 48 hours.
+The model chooses weekday or weekend history for each future local date.
+Current home load and active battery discharge use time-based smoothing so the
+result is independent of how frequently source entities update. The current-load
+adjustment is itself smoothed before being applied to the profile, then decays
+toward the learned baseline over about three hours. Short battery-power spikes
+are not injected directly into the profile forecast. Predicted watts are
+integrated in five-minute steps and converted to kWh. The final step is
+interpolated to produce a more precise depletion timestamp, and forecasting
+stops after 48 hours.
 
 ## Learning And Fallback
 
@@ -191,8 +194,9 @@ automatically, is saved in batches, and survives Home Assistant restarts.
 - Capacity is not estimated and battery degradation is not inferred.
 - Confidence describes input coverage and consistency, not an error interval or
   statistical probability.
-- Large temporary loads can move the near-term estimate, although smoothing and
-  decay are intended to prevent a short spike from dominating the full runtime.
+- Large temporary loads can still move the estimate, but current-load and
+  adjustment smoothing are intended to make short spikes have only a small
+  effect while sustained load changes gradually influence the forecast.
 - Forecast quality depends on accurate SoC, whole-home demand, battery power,
   units, sign convention, usable capacity, reserve, Recorder history, and local
   timezone.

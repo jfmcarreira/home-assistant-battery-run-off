@@ -22,18 +22,18 @@ FORECAST_STEP_HOURS = FORECAST_STEP.total_seconds() / 3600
 MAX_FORECAST_HOURS = 48.0
 
 PROFILE_EWMA_ALPHA = 0.2
-CURRENT_EWMA_ALPHA = 0.3
-CURRENT_READING_WEIGHT = 0.35
-CURRENT_BLEND_HOURS = 0.5
-CURRENT_ADJUSTMENT_DECAY_HOURS = 2.0
+CURRENT_LOAD_TIME_CONSTANT = timedelta(minutes=10)
+CURRENT_DISCHARGE_TIME_CONSTANT = timedelta(minutes=10)
+LOAD_ADJUSTMENT_TIME_CONSTANT = timedelta(minutes=20)
+CURRENT_ADJUSTMENT_DECAY_HOURS = 3.0
 MIN_PROFILE_CELLS = 4
 
 BATTERY_SHARE_MIN_SAMPLES = 3
 BATTERY_SHARE_MIN_HOME_LOAD_W = 50.0
 BATTERY_SHARE_MIN_RATIO = 0.5
 BATTERY_SHARE_MAX_RATIO = 1.5
-CURRENT_ADJUSTMENT_MIN = 0.5
-CURRENT_ADJUSTMENT_MAX = 2.0
+CURRENT_ADJUSTMENT_MIN = 0.6
+CURRENT_ADJUSTMENT_MAX = 1.6
 
 CONFIDENCE_MEDIUM_SCORE = 0.55
 CONFIDENCE_HIGH_SCORE = 0.82
@@ -311,6 +311,49 @@ class EWMAStatistics:
             sample_count=sample_count_value,
             last_update=last_update,
         )
+
+
+@dataclass(slots=True)
+class TimeEWMA:
+    """Time-based EWMA for transient current-condition smoothing."""
+
+    value: float | None = None
+    last_update: datetime | None = None
+
+    def update(
+        self,
+        value: float,
+        updated_at: datetime,
+        *,
+        time_constant: timedelta,
+    ) -> float:
+        """Smooth a non-negative observation using elapsed real time."""
+
+        observation = _require_finite(value, "observation", minimum=0.0)
+        timestamp = _require_aware(updated_at)
+        tau_seconds = time_constant.total_seconds()
+        if tau_seconds <= 0:
+            raise ValueError("time_constant must be greater than zero")
+
+        if self.value is None or self.last_update is None:
+            self.value = observation
+            self.last_update = timestamp
+            return self.value
+
+        elapsed_seconds = (timestamp - self.last_update).total_seconds()
+        if elapsed_seconds <= 0:
+            return self.value
+
+        alpha = 1.0 - math.exp(-elapsed_seconds / tau_seconds)
+        self.value += alpha * (observation - self.value)
+        self.last_update = timestamp
+        return self.value
+
+    def reset(self) -> None:
+        """Clear transient smoothing state."""
+
+        self.value = None
+        self.last_update = None
 
 
 @dataclass(slots=True)
@@ -592,8 +635,9 @@ class BatteryRuntimeModel:
         if self.profile.timezone_name != config.timezone_name:
             raise ValueError("profile timezone does not match model configuration")
         self.battery_share = battery_share or BatteryShare()
-        self._recent_home_load = EWMAStatistics()
-        self._recent_discharge = EWMAStatistics()
+        self._recent_home_load = TimeEWMA()
+        self._recent_discharge = TimeEWMA()
+        self._load_adjustment = TimeEWMA()
         self.last_sample: datetime | None = None
 
     def update_current_conditions(
@@ -613,20 +657,48 @@ class BatteryRuntimeModel:
         home_load = _source_number(home_load_w, minimum=0.0)
         battery_power = _source_number(battery_power_w)
         if home_load is None or battery_power is None:
-            self._recent_home_load = EWMAStatistics()
-            self._recent_discharge = EWMAStatistics()
+            self._recent_home_load.reset()
+            self._recent_discharge.reset()
+            self._load_adjustment.reset()
             return False
 
-        self._recent_home_load.update(home_load, timestamp, alpha=CURRENT_EWMA_ALPHA)
+        recent_home = self._recent_home_load.update(
+            home_load,
+            timestamp,
+            time_constant=CURRENT_LOAD_TIME_CONSTANT,
+        )
         discharge = normalize_discharge_power(
             battery_power, self.config.battery_power_sign
         )
         if discharge > self.config.discharge_threshold_w:
             self._recent_discharge.update(
-                discharge, timestamp, alpha=CURRENT_EWMA_ALPHA
+                discharge,
+                timestamp,
+                time_constant=CURRENT_DISCHARGE_TIME_CONSTANT,
             )
         else:
-            self._recent_discharge = EWMAStatistics()
+            self._recent_discharge.reset()
+
+        expected = self.profile.estimate_home_load(timestamp)
+        if expected.home_load_w is not None and expected.home_load_w > 0:
+            raw_adjustment = min(
+                max(
+                    recent_home / expected.home_load_w,
+                    CURRENT_ADJUSTMENT_MIN,
+                ),
+                CURRENT_ADJUSTMENT_MAX,
+            )
+            if self._load_adjustment.last_update is None:
+                self._load_adjustment.value = 1.0
+                self._load_adjustment.last_update = timestamp
+            else:
+                self._load_adjustment.update(
+                    raw_adjustment,
+                    timestamp,
+                    time_constant=LOAD_ADJUSTMENT_TIME_CONSTANT,
+                )
+        else:
+            self._load_adjustment.reset()
         return True
 
     def observe(
@@ -685,8 +757,11 @@ class BatteryRuntimeModel:
             soc,
             self.config.reserve_soc_percent,
         )
-        recent_home = self._current_value(self._recent_home_load, home_load)
-        recent_discharge = self._current_value(self._recent_discharge, discharge)
+        recent_discharge = (
+            self._recent_discharge.value
+            if self._recent_discharge.value is not None
+            else discharge
+        )
         if remaining_energy == 0:
             return PredictionResult(
                 status=PredictionStatus.DISCHARGING,
@@ -701,7 +776,6 @@ class BatteryRuntimeModel:
         return self._profile_forecast(
             now,
             remaining_energy,
-            recent_home,
             recent_discharge,
             discharge,
         )
@@ -717,14 +791,6 @@ class BatteryRuntimeModel:
             average_discharge_w=None,
             used_fallback=False,
         )
-
-    @staticmethod
-    def _current_value(statistics: EWMAStatistics, current: float) -> float:
-        if statistics.sample_count == 0:
-            return current
-        return (
-            1.0 - CURRENT_READING_WEIGHT
-        ) * statistics.mean + CURRENT_READING_WEIGHT * current
 
     def _constant_power_forecast(
         self,
@@ -758,23 +824,19 @@ class BatteryRuntimeModel:
         self,
         now: datetime,
         remaining_energy_kwh: float,
-        recent_home_w: float,
         recent_discharge_w: float,
         current_discharge_w: float,
     ) -> PredictionResult:
         share = self.battery_share.value
+        current_adjustment = (
+            self._load_adjustment.value
+            if self._load_adjustment.value is not None
+            else 1.0
+        )
         expected_now = self.profile.estimate_home_load(now)
         if expected_now.home_load_w is not None and expected_now.home_load_w > 0:
-            current_adjustment = min(
-                max(
-                    recent_home_w / expected_now.home_load_w,
-                    CURRENT_ADJUSTMENT_MIN,
-                ),
-                CURRENT_ADJUSTMENT_MAX,
-            )
             expected_current_discharge = expected_now.home_load_w * share
         else:
-            current_adjustment = 1.0
             expected_current_discharge = recent_discharge_w
 
         cumulative_energy = 0.0
@@ -801,12 +863,7 @@ class BatteryRuntimeModel:
                 )
                 baseline_discharge = estimate.home_load_w * share * adjustment
 
-            immediate_weight = max(0.0, 1.0 - midpoint_hours / CURRENT_BLEND_HOURS)
-            predicted_discharge = max(
-                immediate_weight * recent_discharge_w
-                + (1.0 - immediate_weight) * baseline_discharge,
-                0.0,
-            )
+            predicted_discharge = max(baseline_discharge, 0.0)
             step_energy = predicted_discharge * FORECAST_STEP_HOURS / 1000.0
 
             total_steps += 1

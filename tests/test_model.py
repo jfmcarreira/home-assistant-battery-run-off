@@ -468,23 +468,98 @@ def test_forecast_uses_second_fold_across_fall_dst_transition() -> None:
     )
 
 
-def test_current_spike_is_blended_near_term_and_decays() -> None:
-    """A spike changes the forecast without being extrapolated as a constant."""
+def test_transient_smoothing_is_independent_of_update_frequency() -> None:
+    """Time-based smoothing gives the same result for chatty source sensors."""
+
+    sparse = BatteryRuntimeModel(_config(capacity_kwh=1))
+    chatty = BatteryRuntimeModel(_config(capacity_kwh=1))
+
+    sparse.update_current_conditions(UTC_NOW, 1000, 1000)
+    chatty.update_current_conditions(UTC_NOW, 1000, 1000)
+
+    sparse.update_current_conditions(UTC_NOW + timedelta(minutes=1), 2000, 2000)
+    sparse.update_current_conditions(UTC_NOW + timedelta(minutes=11), 2000, 2000)
+    for minute in range(1, 12):
+        chatty.update_current_conditions(
+            UTC_NOW + timedelta(minutes=minute), 2000, 2000
+        )
+
+    sparse_result = _predict(
+        sparse,
+        timestamp=UTC_NOW + timedelta(minutes=11),
+        home_load_w=2000,
+        battery_power_w=2000,
+    )
+    chatty_result = _predict(
+        chatty,
+        timestamp=UTC_NOW + timedelta(minutes=11),
+        home_load_w=2000,
+        battery_power_w=2000,
+    )
+
+    assert sparse_result.average_discharge_w == pytest.approx(
+        chatty_result.average_discharge_w
+    )
+    assert sparse_result.runtime_hours == pytest.approx(chatty_result.runtime_hours)
+
+
+def test_short_current_spike_has_limited_profile_forecast_effect() -> None:
+    """A two-minute load spike only nudges the learned-profile forecast."""
 
     profile = _profile()
     normal_model = BatteryRuntimeModel(_config(capacity_kwh=2), profile=profile)
     spike_model = BatteryRuntimeModel(
         _config(capacity_kwh=2), profile=ConsumptionProfile.from_dict(profile.to_dict())
     )
-    normal_model.update_current_conditions(UTC_NOW - timedelta(minutes=5), 1000, 1000)
-    spike_model.update_current_conditions(UTC_NOW - timedelta(minutes=5), 1000, 1000)
 
-    normal = _predict(normal_model)
-    spike = _predict(spike_model, home_load_w=5000, battery_power_w=5000)
+    for minute in range(2):
+        timestamp = UTC_NOW + timedelta(minutes=minute)
+        normal_model.update_current_conditions(timestamp, 1000, 1000)
+        spike_model.update_current_conditions(timestamp, 1000, 1000)
+
+    for minute in range(2, 4):
+        timestamp = UTC_NOW + timedelta(minutes=minute)
+        normal_model.update_current_conditions(timestamp, 1000, 1000)
+        spike_model.update_current_conditions(timestamp, 5000, 5000)
+
+    normal = _predict(
+        normal_model,
+        timestamp=UTC_NOW + timedelta(minutes=3),
+    )
+    spike = _predict(
+        spike_model,
+        timestamp=UTC_NOW + timedelta(minutes=3),
+        home_load_w=5000,
+        battery_power_w=5000,
+    )
 
     assert normal.runtime_hours == pytest.approx(2)
     assert spike.runtime_hours is not None
-    assert 0.4 < spike.runtime_hours < normal.runtime_hours
+    assert normal.runtime_hours is not None
+    assert normal.runtime_hours * 0.9 < spike.runtime_hours < normal.runtime_hours
+
+
+def test_sustained_load_change_still_adjusts_profile_forecast() -> None:
+    """A lasting load increase gradually becomes part of the forecast."""
+
+    model = BatteryRuntimeModel(_config(capacity_kwh=2), profile=_profile())
+    model.update_current_conditions(UTC_NOW, 1000, 1000)
+    model.update_current_conditions(UTC_NOW + timedelta(minutes=1), 1000, 1000)
+
+    for minute in range(2, 32):
+        model.update_current_conditions(
+            UTC_NOW + timedelta(minutes=minute), 2000, 2000
+        )
+
+    result = _predict(
+        model,
+        timestamp=UTC_NOW + timedelta(minutes=31),
+        home_load_w=2000,
+        battery_power_w=2000,
+    )
+
+    assert result.runtime_hours is not None
+    assert 1.3 < result.runtime_hours < 1.7
 
 
 def test_missing_cells_use_same_day_average_and_report_low_coverage() -> None:
