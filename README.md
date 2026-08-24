@@ -1,17 +1,19 @@
 # Home Battery Runtime
 
+> [!IMPORTANT]
+> This integration is mainly a result of Vibe Coding.
+
 Home Battery Runtime is a local Home Assistant custom integration that estimates
 when a home battery will reach its configured reserve state of charge (SoC). It
 combines current battery conditions with a learned time-of-week household load
 profile. No cloud service, external API, telemetry, or machine-learning library
 is required.
 
-> [!IMPORTANT]
-> This integration requires Home Assistant `2026.8.0` or newer.
-
 The forecast is conditional: it answers **when the battery would reach reserve
 if active discharge continues**. It does not predict future solar production,
 charging, or a scheduled change in battery operating mode.
+
+This integration requires Home Assistant `2026.8.0` or newer.
 
 ## Installation
 
