@@ -323,8 +323,10 @@ async def test_live_sample_refresh_updates_current_smoothing_once(
         await coordinator._async_live_sample(NOW)
 
     assert update_current.call_count == 1
-    assert coordinator.model._recent_home_load.sample_count == 1
-    assert coordinator.model._recent_discharge.sample_count == 1
+    assert coordinator.model._recent_home_load.value == pytest.approx(750)
+    assert coordinator.model._recent_home_load.last_update is not None
+    assert coordinator.model._recent_discharge.value == pytest.approx(800)
+    assert coordinator.model._recent_discharge.last_update is not None
 
 
 async def test_recorder_bootstrap_uses_executor_and_requested_watts(
@@ -363,8 +365,10 @@ async def test_recorder_bootstrap_uses_executor_and_requested_watts(
     assert call.args[3] - call.args[2] == timedelta(days=28)
     assert coordinator.model.profile.cell_at(NOW).mean == pytest.approx(1200)
     assert coordinator.model.battery_share.statistics.sample_count == 1
-    assert coordinator.model._recent_home_load.sample_count == 0
-    assert coordinator.model._recent_discharge.sample_count == 0
+    assert coordinator.model._recent_home_load.value is None
+    assert coordinator.model._recent_home_load.last_update is None
+    assert coordinator.model._recent_discharge.value is None
+    assert coordinator.model._recent_discharge.last_update is None
 
 
 async def test_missing_recorder_history_starts_with_empty_live_profile(

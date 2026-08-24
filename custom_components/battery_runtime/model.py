@@ -12,7 +12,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import IntEnum, StrEnum
-from typing import Any
+from typing import Any, Self
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 SLOTS_PER_DAY = 96
@@ -42,14 +42,7 @@ CONFIDENCE_HIGH_COVERAGE = 0.9
 CONFIDENCE_FULL_EFFECTIVE_WEIGHT = 5.0
 CONFIDENCE_MAX_COEFFICIENT_OF_VARIATION = 1.0
 
-MODEL_SCHEMA_VERSION = 1
-
-
-class DayType(StrEnum):
-    """Profile day categories."""
-
-    WEEKDAY = "weekday"
-    WEEKEND = "weekend"
+MODEL_SCHEMA_VERSION = 2
 
 
 class BatteryPowerSign(IntEnum):
@@ -255,7 +248,7 @@ class EWMAStatistics:
         }
 
     @classmethod
-    def from_dict(cls, data: object) -> EWMAStatistics:
+    def from_dict(cls, data: object) -> Self:
         """Load and strictly validate aggregate state."""
 
         record = _require_mapping(data, "EWMA statistics")
@@ -371,14 +364,13 @@ class ProfileEstimate:
 
 
 class ConsumptionProfile:
-    """Weekday/weekend home-load profile with 96 cells per day type."""
+    """Home-load profile with 96 local quarter-hour cells shared by all days."""
 
     def __init__(
         self,
         timezone_name: str,
         *,
-        weekday_cells: Sequence[ProfileCell] | None = None,
-        weekend_cells: Sequence[ProfileCell] | None = None,
+        cells: Sequence[ProfileCell] | None = None,
     ) -> None:
         if not isinstance(timezone_name, str) or not timezone_name:
             raise ValueError("timezone_name must be non-empty")
@@ -388,40 +380,29 @@ class ConsumptionProfile:
             raise ValueError(f"unknown timezone: {timezone_name}") from err
         self.timezone_name = timezone_name
         self.timezone = timezone
-        self.weekday_cells = self._prepare_cells(weekday_cells, DayType.WEEKDAY)
-        self.weekend_cells = self._prepare_cells(weekend_cells, DayType.WEEKEND)
+        self.cells = self._prepare_cells(cells)
 
     @staticmethod
-    def _prepare_cells(
-        cells: Sequence[ProfileCell] | None, day_type: DayType
-    ) -> list[ProfileCell]:
+    def _prepare_cells(cells: Sequence[ProfileCell] | None) -> list[ProfileCell]:
         if cells is None:
             return [ProfileCell() for _ in range(SLOTS_PER_DAY)]
         if isinstance(cells, (str, bytes)) or len(cells) != SLOTS_PER_DAY:
-            raise ValueError(f"{day_type.value} profile must contain 96 cells")
+            raise ValueError("profile must contain 96 cells")
         prepared = list(cells)
         if not all(isinstance(cell, ProfileCell) for cell in prepared):
-            raise ValueError(f"{day_type.value} profile contains an invalid cell")
+            raise ValueError("profile contains an invalid cell")
         return prepared
 
-    def day_type_and_slot(self, timestamp: datetime) -> tuple[DayType, int]:
-        """Map an aware timestamp to its configured local day type and slot."""
+    def slot_for(self, timestamp: datetime) -> int:
+        """Map an aware timestamp to its configured local quarter-hour slot."""
 
         local = _require_aware(timestamp).astimezone(self.timezone)
-        day_type = DayType.WEEKEND if local.weekday() >= 5 else DayType.WEEKDAY
-        slot = (local.hour * 60 + local.minute) // SLOT_MINUTES
-        return day_type, slot
-
-    def cells_for(self, day_type: DayType) -> list[ProfileCell]:
-        """Return the cells for a day category."""
-
-        return self.weekday_cells if day_type is DayType.WEEKDAY else self.weekend_cells
+        return (local.hour * 60 + local.minute) // SLOT_MINUTES
 
     def cell_at(self, timestamp: datetime) -> ProfileCell:
         """Return the exact profile cell for a timestamp."""
 
-        day_type, slot = self.day_type_and_slot(timestamp)
-        return self.cells_for(day_type)[slot]
+        return self.cells[self.slot_for(timestamp)]
 
     def update(self, timestamp: datetime, home_load_w: float) -> ProfileCell:
         """Learn a valid non-negative home-load observation."""
@@ -431,21 +412,18 @@ class ConsumptionProfile:
         return cell
 
     def estimate_home_load(self, timestamp: datetime) -> ProfileEstimate:
-        """Estimate home load, falling back only within the matching day type.
+        """Estimate home load from the matching slot or shared profile average.
 
-        A missing exact slot uses the effective-weighted mean of populated cells
-        for the same weekday/weekend category.  It never borrows the other day
-        type; callers may then use a current-condition fallback when that entire
-        category is unlearned.
+        A missing exact slot uses the effective-weighted mean of every populated
+        cell. Callers may use a current-condition fallback when no cells are
+        learned.
         """
 
-        day_type, slot = self.day_type_and_slot(timestamp)
-        cells = self.cells_for(day_type)
-        exact_cell = cells[slot]
+        exact_cell = self.cell_at(timestamp)
         if exact_cell.sample_count > 0:
             return ProfileEstimate(exact_cell.mean, True, exact_cell)
 
-        populated = [cell for cell in cells if cell.sample_count > 0]
+        populated = [cell for cell in self.cells if cell.sample_count > 0]
         total_weight = sum(cell.effective_weight for cell in populated)
         if total_weight <= 0:
             return ProfileEstimate(None, False)
@@ -454,23 +432,52 @@ class ConsumptionProfile:
         )
         return ProfileEstimate(mean, False)
 
-    def observed_cell_count(self, day_type: DayType | None = None) -> int:
+    def observed_cell_count(self) -> int:
         """Return the number of exact cells containing observations."""
 
-        if day_type is None:
-            cells = self.weekday_cells + self.weekend_cells
-        else:
-            cells = self.cells_for(day_type)
-        return sum(cell.sample_count > 0 for cell in cells)
+        return sum(cell.sample_count > 0 for cell in self.cells)
 
     def to_dict(self) -> dict[str, object]:
         """Return JSON-compatible profile state suitable for HA Store."""
 
         return {
             "timezone": self.timezone_name,
-            DayType.WEEKDAY.value: [cell.to_dict() for cell in self.weekday_cells],
-            DayType.WEEKEND.value: [cell.to_dict() for cell in self.weekend_cells],
+            "cells": [cell.to_dict() for cell in self.cells],
         }
+
+    @staticmethod
+    def _merge_legacy_cells(weekday: ProfileCell, weekend: ProfileCell) -> ProfileCell:
+        """Combine legacy weekday and weekend aggregates for one shared slot."""
+
+        populated = [cell for cell in (weekday, weekend) if cell.sample_count > 0]
+        if not populated:
+            return ProfileCell()
+
+        total_weight = sum(cell.effective_weight for cell in populated)
+        mean = (
+            sum(cell.mean * cell.effective_weight for cell in populated) / total_weight
+        )
+        variance = (
+            sum(
+                cell.effective_weight * (cell.variance + (cell.mean - mean) ** 2)
+                for cell in populated
+            )
+            / total_weight
+        )
+        sample_count = sum(cell.sample_count for cell in populated)
+        effective_weight = (
+            1.0 - (1.0 - PROFILE_EWMA_ALPHA) ** sample_count
+        ) / PROFILE_EWMA_ALPHA
+        last_updates = [
+            cell.last_update for cell in populated if cell.last_update is not None
+        ]
+        return ProfileCell(
+            mean=mean,
+            variance=variance,
+            effective_weight=effective_weight,
+            sample_count=sample_count,
+            last_update=max(last_updates),
+        )
 
     @classmethod
     def from_dict(cls, data: object) -> ConsumptionProfile:
@@ -481,21 +488,34 @@ class ConsumptionProfile:
         if not isinstance(timezone_name, str):
             raise ValueError("profile timezone must be a string")
 
-        loaded: dict[DayType, list[ProfileCell]] = {}
-        for day_type in DayType:
-            raw_cells = record.get(day_type.value)
-            if (
-                not isinstance(raw_cells, Sequence)
-                or isinstance(raw_cells, (str, bytes))
-                or len(raw_cells) != SLOTS_PER_DAY
-            ):
-                raise ValueError(f"{day_type.value} profile must contain 96 cells")
-            loaded[day_type] = [ProfileCell.from_dict(cell) for cell in raw_cells]
+        raw_cells = record.get("cells")
+        if isinstance(raw_cells, Sequence) and not isinstance(raw_cells, (str, bytes)):
+            if len(raw_cells) != SLOTS_PER_DAY:
+                raise ValueError("profile must contain 96 cells")
+            return cls(
+                timezone_name, cells=[ProfileCell.from_dict(cell) for cell in raw_cells]
+            )
 
+        legacy_cells: list[list[ProfileCell]] = []
+        for day_type in ("weekday", "weekend"):
+            raw_legacy_cells = record.get(day_type)
+            if (
+                not isinstance(raw_legacy_cells, Sequence)
+                or isinstance(raw_legacy_cells, (str, bytes))
+                or len(raw_legacy_cells) != SLOTS_PER_DAY
+            ):
+                raise ValueError("profile must contain 96 cells")
+            legacy_cells.append(
+                [ProfileCell.from_dict(cell) for cell in raw_legacy_cells]
+            )
+
+        weekday_cells, weekend_cells = legacy_cells
         return cls(
             timezone_name,
-            weekday_cells=loaded[DayType.WEEKDAY],
-            weekend_cells=loaded[DayType.WEEKEND],
+            cells=[
+                cls._merge_legacy_cells(weekday, weekend)
+                for weekday, weekend in zip(weekday_cells, weekend_cells, strict=True)
+            ],
         )
 
 
@@ -849,8 +869,7 @@ class BatteryRuntimeModel:
         while elapsed_hours < MAX_FORECAST_HOURS:
             midpoint_hours = elapsed_hours + FORECAST_STEP_HOURS / 2.0
             midpoint = _timeline_add(now, timedelta(hours=midpoint_hours))
-            day_type, _ = self.profile.day_type_and_slot(midpoint)
-            if self.profile.observed_cell_count(day_type) < MIN_PROFILE_CELLS:
+            if self.profile.observed_cell_count() < MIN_PROFILE_CELLS:
                 return self._constant_power_forecast(
                     now, remaining_energy_kwh, recent_discharge_w
                 )
@@ -997,7 +1016,7 @@ class BatteryRuntimeModel:
         if (
             isinstance(version, bool)
             or not isinstance(version, int)
-            or version != MODEL_SCHEMA_VERSION
+            or version not in (1, MODEL_SCHEMA_VERSION)
         ):
             raise ValueError("unsupported model schema version")
         profile = ConsumptionProfile.from_dict(record.get("profile"))
@@ -1028,7 +1047,6 @@ __all__ = [
     "BatteryRuntimeModel",
     "BatteryShare",
     "ConsumptionProfile",
-    "DayType",
     "EWMAStatistics",
     "ModelConfig",
     "PredictionConfidence",

@@ -12,7 +12,6 @@ from custom_components.battery_runtime.model import (
     BatteryRuntimeModel,
     BatteryShare,
     ConsumptionProfile,
-    DayType,
     EWMAStatistics,
     ModelConfig,
     PredictionConfidence,
@@ -54,17 +53,11 @@ def _fill_cells(cells: list[ProfileCell], value: float, *, samples: int = 12) ->
 def _profile(
     *,
     timezone_name: str = "UTC",
-    weekday_w: float = 1000.0,
-    weekend_w: float | None = None,
+    home_load_w: float = 1000.0,
     samples: int = 12,
 ) -> ConsumptionProfile:
     profile = ConsumptionProfile(timezone_name)
-    _fill_cells(profile.weekday_cells, weekday_w, samples=samples)
-    _fill_cells(
-        profile.weekend_cells,
-        weekday_w if weekend_w is None else weekend_w,
-        samples=samples,
-    )
+    _fill_cells(profile.cells, home_load_w, samples=samples)
     return profile
 
 
@@ -193,19 +186,21 @@ def test_ewma_deserialization_rejects_inconsistent_cross_fields(
         EWMAStatistics.from_dict(serialized)
 
 
-def test_profile_selects_weekday_weekend_and_local_slots() -> None:
-    """Lookups use the configured local date and quarter-hour slot."""
+def test_profile_shares_local_slots_across_all_days() -> None:
+    """The same local quarter-hour shares history regardless of the day."""
 
     profile = ConsumptionProfile("Europe/Lisbon")
     monday = datetime(2026, 1, 5, 9, 14, tzinfo=ZoneInfo("Europe/Lisbon"))
     saturday = datetime(2026, 1, 10, 9, 14, tzinfo=ZoneInfo("Europe/Lisbon"))
     profile.update(monday, 500)
-    profile.update(saturday, 1500)
 
-    assert profile.day_type_and_slot(monday) == (DayType.WEEKDAY, 36)
-    assert profile.day_type_and_slot(saturday) == (DayType.WEEKEND, 36)
+    assert profile.slot_for(monday) == 36
+    assert profile.slot_for(saturday) == 36
     assert profile.estimate_home_load(monday).home_load_w == 500
-    assert profile.estimate_home_load(saturday).home_load_w == 1500
+    assert profile.estimate_home_load(saturday).home_load_w == 500
+
+    profile.update(saturday, 1500)
+    assert profile.estimate_home_load(monday).home_load_w == pytest.approx(700)
 
 
 def test_profile_converts_utc_before_selecting_slot() -> None:
@@ -213,10 +208,8 @@ def test_profile_converts_utc_before_selecting_slot() -> None:
 
     profile = ConsumptionProfile("Pacific/Auckland")
     instant = datetime(2026, 1, 9, 11, 5, tzinfo=UTC)
-    day_type, slot = profile.day_type_and_slot(instant)
 
-    assert day_type is DayType.WEEKEND
-    assert slot == 0
+    assert profile.slot_for(instant) == 0
 
 
 def test_battery_share_defaults_then_learns_and_clamps_outliers() -> None:
@@ -386,47 +379,23 @@ def test_negative_discharge_sign_produces_same_prediction() -> None:
     assert result.runtime_hours == pytest.approx(1)
 
 
-def test_weekday_and_weekend_forecasts_use_distinct_profiles() -> None:
-    """Future demand follows the appropriate local day category."""
+def test_forecasts_use_the_same_profile_on_every_day() -> None:
+    """A populated profile remains ready across weekdays and weekends."""
 
-    profile = _profile(weekday_w=1000, weekend_w=2000)
+    profile = _profile(home_load_w=1000)
     model = BatteryRuntimeModel(_config(capacity_kwh=2), profile=profile)
     monday = datetime(2026, 1, 5, 12, tzinfo=UTC)
     saturday = datetime(2026, 1, 10, 12, tzinfo=UTC)
 
-    weekday = _predict(model, timestamp=monday, home_load_w=1000, battery_power_w=1000)
-    weekend = _predict(
-        model, timestamp=saturday, home_load_w=2000, battery_power_w=2000
+    monday_result = _predict(
+        model, timestamp=monday, home_load_w=1000, battery_power_w=1000
+    )
+    saturday_result = _predict(
+        model, timestamp=saturday, home_load_w=1000, battery_power_w=1000
     )
 
-    assert weekday.runtime_hours == pytest.approx(2)
-    assert weekend.runtime_hours == pytest.approx(1)
-
-
-def test_forecast_switches_profile_after_local_midnight() -> None:
-    """A Friday forecast starts using weekend cells after midnight."""
-
-    mixed_profile = _profile(weekday_w=1000, weekend_w=2000)
-    weekday_profile = _profile(weekday_w=1000, weekend_w=1000)
-    config = _config(capacity_kwh=1)
-    friday = datetime(2026, 1, 2, 23, 50, tzinfo=UTC)
-
-    mixed = _predict(
-        BatteryRuntimeModel(config, profile=mixed_profile),
-        timestamp=friday,
-        home_load_w=1000,
-        battery_power_w=1000,
-    )
-    all_weekday = _predict(
-        BatteryRuntimeModel(config, profile=weekday_profile),
-        timestamp=friday,
-        home_load_w=1000,
-        battery_power_w=1000,
-    )
-
-    assert mixed.runtime_hours is not None
-    assert all_weekday.runtime_hours == pytest.approx(1)
-    assert mixed.runtime_hours < all_weekday.runtime_hours
+    assert monday_result.runtime_hours == pytest.approx(2)
+    assert saturday_result.runtime_hours == pytest.approx(2)
 
 
 def test_forecast_uses_elapsed_time_across_spring_dst_transition() -> None:
@@ -547,9 +516,7 @@ def test_sustained_load_change_still_adjusts_profile_forecast() -> None:
     model.update_current_conditions(UTC_NOW + timedelta(minutes=1), 1000, 1000)
 
     for minute in range(2, 32):
-        model.update_current_conditions(
-            UTC_NOW + timedelta(minutes=minute), 2000, 2000
-        )
+        model.update_current_conditions(UTC_NOW + timedelta(minutes=minute), 2000, 2000)
 
     result = _predict(
         model,
@@ -562,13 +529,13 @@ def test_sustained_load_change_still_adjusts_profile_forecast() -> None:
     assert 1.3 < result.runtime_hours < 1.7
 
 
-def test_missing_cells_use_same_day_average_and_report_low_coverage() -> None:
-    """Sparse exact cells do not cause gaps or borrow the other day type."""
+def test_missing_cells_use_shared_average_and_report_low_coverage() -> None:
+    """Sparse exact cells use the shared average without introducing gaps."""
 
     profile = ConsumptionProfile("UTC")
     for slot in (0, 20, 40, 60):
         for sample in range(8):
-            profile.weekday_cells[slot].update(1000, UTC_NOW + timedelta(days=sample))
+            profile.cells[slot].update(1000, UTC_NOW + timedelta(days=sample))
     model = BatteryRuntimeModel(_config(capacity_kwh=1), profile=profile)
     monday_midnight = datetime(2026, 1, 5, tzinfo=UTC)
     result = _predict(model, timestamp=monday_midnight)
@@ -579,77 +546,20 @@ def test_missing_cells_use_same_day_average_and_report_low_coverage() -> None:
     assert result.confidence is PredictionConfidence.LOW
 
 
-def test_history_for_other_day_type_keeps_forecast_in_learning() -> None:
-    """Weekday observations are not treated as relevant weekend history."""
+def test_profile_history_is_available_on_every_day() -> None:
+    """History learned on one day makes the same slots ready on every day."""
 
     profile = ConsumptionProfile("UTC")
-    _fill_cells(profile.weekday_cells, 1000)
+    _fill_cells(profile.cells, 1000)
     model = BatteryRuntimeModel(_config(capacity_kwh=1), profile=profile)
     saturday = datetime(2026, 1, 10, 12, tzinfo=UTC)
 
     result = _predict(model, timestamp=saturday)
 
-    assert result.status is PredictionStatus.LEARNING
-    assert result.runtime_hours == pytest.approx(1)
-    assert result.coverage_percent == 0
-    assert result.used_fallback
-
-
-def test_profile_readiness_includes_future_day_type_crossing() -> None:
-    """A Sunday forecast falls back if its projected Monday is unlearned."""
-
-    profile = ConsumptionProfile("UTC")
-    _fill_cells(profile.weekend_cells, 1000)
-    model = BatteryRuntimeModel(_config(capacity_kwh=2), profile=profile)
-    sunday_evening = datetime(2026, 1, 11, 23, tzinfo=UTC)
-
-    result = _predict(model, timestamp=sunday_evening)
-
-    assert result.status is PredictionStatus.LEARNING
-    assert result.runtime_hours == pytest.approx(2)
-    assert result.used_fallback
-
-
-def test_profile_depletion_before_unready_future_day_uses_profile() -> None:
-    """A strong learned Sunday profile may deplete before unlearned Monday."""
-
-    profile = ConsumptionProfile("UTC")
-    _fill_cells(profile.weekend_cells, 2000)
-    model = BatteryRuntimeModel(_config(capacity_kwh=1), profile=profile)
-    sunday_evening = datetime(2026, 1, 11, 23, tzinfo=UTC)
-
-    result = _predict(
-        model,
-        timestamp=sunday_evening,
-        home_load_w=2000,
-        battery_power_w=100,
-    )
-
     assert result.status is PredictionStatus.DISCHARGING
-    assert result.runtime_hours is not None
-    assert result.runtime_hours < 1
+    assert result.runtime_hours == pytest.approx(1)
+    assert result.coverage_percent == pytest.approx(100)
     assert not result.used_fallback
-
-
-def test_profile_path_reaching_unready_future_day_uses_current_fallback() -> None:
-    """A weak Sunday profile crossing unlearned Monday abandons that forecast."""
-
-    profile = ConsumptionProfile("UTC")
-    _fill_cells(profile.weekend_cells, 100)
-    model = BatteryRuntimeModel(_config(capacity_kwh=1), profile=profile)
-    sunday_evening = datetime(2026, 1, 11, 23, tzinfo=UTC)
-
-    result = _predict(
-        model,
-        timestamp=sunday_evening,
-        home_load_w=100,
-        battery_power_w=2000,
-    )
-
-    assert result.status is PredictionStatus.LEARNING
-    assert result.runtime_hours == pytest.approx(0.5)
-    assert result.average_discharge_w == pytest.approx(2000)
-    assert result.used_fallback
 
 
 def test_final_five_minute_step_is_interpolated() -> None:
@@ -670,7 +580,7 @@ def test_profile_forecast_enforces_48_hour_horizon() -> None:
 
     model = BatteryRuntimeModel(
         _config(capacity_kwh=10),
-        profile=_profile(weekday_w=100, weekend_w=100),
+        profile=_profile(home_load_w=100),
     )
     result = _predict(model, home_load_w=100, battery_power_w=100)
 
@@ -695,15 +605,14 @@ def test_confidence_decreases_for_high_variability() -> None:
 
     stable = BatteryRuntimeModel(_config(capacity_kwh=1), profile=_profile())
     variable_profile = ConsumptionProfile("UTC")
-    for cells in (variable_profile.weekday_cells, variable_profile.weekend_cells):
-        for cell in cells:
-            for sample in range(20):
-                cell.update(
-                    0 if sample % 2 == 0 else 2000,
-                    UTC_NOW + timedelta(days=sample),
-                )
+    for cell in variable_profile.cells:
+        for sample in range(20):
+            cell.update(
+                0 if sample % 2 == 0 else 2000,
+                UTC_NOW + timedelta(days=sample),
+            )
     variable = BatteryRuntimeModel(_config(capacity_kwh=1), profile=variable_profile)
-    variable_current = variable_profile.weekday_cells[48].mean
+    variable_current = variable_profile.cells[48].mean
 
     stable_result = _predict(stable)
     variable_result = _predict(
@@ -778,6 +687,34 @@ def test_profile_and_model_round_trip_store_serialization() -> None:
     assert restored.last_sample == local + timedelta(minutes=10)
 
 
+def test_legacy_profile_storage_merges_day_categories() -> None:
+    """Legacy weekday and weekend cells restore into one shared profile."""
+
+    config = _config()
+    weekday = ConsumptionProfile("UTC")
+    weekend = ConsumptionProfile("UTC")
+    weekday.cells[48].update(800, UTC_NOW)
+    weekend.cells[48].update(1000, UTC_NOW + timedelta(days=5))
+    serialized = BatteryRuntimeModel(config).to_dict()
+    serialized["version"] = 1
+    serialized["profile"] = {
+        "timezone": "UTC",
+        "weekday": weekday.to_dict()["cells"],
+        "weekend": weekend.to_dict()["cells"],
+    }
+
+    restored = BatteryRuntimeModel.from_dict(config, serialized)
+    merged = restored.profile.cells[48]
+
+    assert merged.sample_count == 2
+    assert merged.mean == pytest.approx(900)
+    assert merged.variance == pytest.approx(10_000)
+    assert restored.to_dict()["version"] == 2
+    restored_profile = restored.to_dict()["profile"]
+    assert isinstance(restored_profile, dict)
+    assert "cells" in restored_profile
+
+
 def test_bootstrap_observations_match_restored_aggregate_model_prediction() -> None:
     """Historical learning has no transient state absent from serialization."""
 
@@ -809,9 +746,9 @@ def test_serialization_rejects_malformed_or_incompatible_data() -> None:
     serialized = BatteryRuntimeModel(config).to_dict()
     profile = serialized["profile"]
     assert isinstance(profile, dict)
-    weekday = profile[DayType.WEEKDAY.value]
-    assert isinstance(weekday, list)
-    cell = weekday[0]
+    cells = profile["cells"]
+    assert isinstance(cells, list)
+    cell = cells[0]
     assert isinstance(cell, dict)
     cell["mean"] = math.nan
 

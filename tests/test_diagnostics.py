@@ -26,8 +26,8 @@ from custom_components.battery_runtime.model import (
 
 pytestmark = pytest.mark.usefixtures("enable_custom_integrations")
 
-WEEKDAY = datetime(2026, 8, 17, 12, tzinfo=UTC)
-WEEKEND = datetime(2026, 8, 22, 12, tzinfo=UTC)
+FIRST_SAMPLE = datetime(2026, 8, 17, 12, tzinfo=UTC)
+SECOND_SAMPLE = datetime(2026, 8, 22, 12, tzinfo=UTC)
 
 
 def _coordinator_with_aggregates(
@@ -35,14 +35,14 @@ def _coordinator_with_aggregates(
 ) -> BatteryRuntimeCoordinator:
     """Build a loaded coordinator containing only aggregate learning data."""
     coordinator = BatteryRuntimeCoordinator(hass, entry)
-    coordinator.model.observe(WEEKDAY, 800.0, 900.0)
-    coordinator.model.observe(WEEKEND, 1000.0, 1100.0)
-    coordinator.last_save = WEEKEND
+    coordinator.model.observe(FIRST_SAMPLE, 800.0, 900.0)
+    coordinator.model.observe(SECOND_SAMPLE, 1000.0, 1100.0)
+    coordinator.last_save = SECOND_SAMPLE
     coordinator.async_set_updated_data(
         PredictionResult(
             status=PredictionStatus.DISCHARGING,
             confidence=PredictionConfidence.MEDIUM,
-            depletion_time=WEEKEND.replace(hour=16),
+            depletion_time=SECOND_SAMPLE.replace(hour=16),
             runtime_hours=4.0,
             coverage_percent=50.0,
             average_discharge_w=1000.0,
@@ -82,15 +82,14 @@ async def test_diagnostics_redact_sources_and_summarize_profile(
 
     profile = diagnostics["profile"]
     assert profile["timezone"] == hass.config.time_zone
-    assert profile["weekday"]["total_slots"] == 96
-    assert profile["weekday"]["observed_slots"] == 1
-    assert profile["weekday"]["observation_count"] == 1
-    assert profile["weekday"]["average_home_load_w"] == pytest.approx(800)
-    assert profile["weekend"]["observed_slots"] == 1
-    assert profile["weekend"]["average_home_load_w"] == pytest.approx(1000)
+    slots = profile["slots"]
+    assert slots["total_slots"] == 96
+    assert slots["observed_slots"] == 1
+    assert slots["observation_count"] == 2
+    assert slots["average_home_load_w"] == pytest.approx(840)
     assert profile["battery_share"]["observation_count"] == 2
-    assert "weekday_cells" not in serialized
-    assert "weekend_cells" not in serialized
+    assert "weekday" not in profile
+    assert "weekend" not in profile
     assert "raw" not in serialized.lower()
 
 
@@ -104,12 +103,12 @@ async def test_diagnostics_include_only_calculated_runtime_output(
 
     runtime = diagnostics["runtime"]
     assert runtime["last_update_success"]
-    assert runtime["last_sample"] == WEEKEND.isoformat()
-    assert runtime["last_save"] == WEEKEND.isoformat()
+    assert runtime["last_sample"] == SECOND_SAMPLE.isoformat()
+    assert runtime["last_save"] == SECOND_SAMPLE.isoformat()
     assert runtime["prediction"] == {
         "status": "discharging",
         "confidence": "medium",
-        "depletion_time": WEEKEND.replace(hour=16).isoformat(),
+        "depletion_time": SECOND_SAMPLE.replace(hour=16).isoformat(),
         "runtime_hours": 4.0,
         "coverage_percent": 50.0,
         "average_discharge_w": 1000.0,
@@ -127,5 +126,4 @@ async def test_diagnostics_handle_missing_prediction_snapshot(
     diagnostics = await async_get_config_entry_diagnostics(hass, battery_entry)
 
     assert diagnostics["runtime"]["prediction"] is None
-    assert diagnostics["profile"]["weekday"]["observed_slots"] == 0
-    assert diagnostics["profile"]["weekend"]["observed_slots"] == 0
+    assert diagnostics["profile"]["slots"]["observed_slots"] == 0

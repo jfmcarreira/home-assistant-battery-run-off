@@ -12,7 +12,7 @@ from homeassistant.core import HomeAssistant
 
 from . import BatteryRuntimeConfigEntry
 from .const import SOURCE_ENTITY_KEYS, STORAGE_VERSION
-from .model import DayType, PredictionResult, ProfileCell
+from .model import PredictionResult, ProfileCell
 
 
 def _datetime_string(value: datetime | None) -> str | None:
@@ -90,8 +90,7 @@ async def async_get_config_entry_diagnostics(
         "profile": {
             "storage_schema_version": STORAGE_VERSION,
             "timezone": profile.timezone_name,
-            DayType.WEEKDAY.value: _profile_summary(profile.weekday_cells),
-            DayType.WEEKEND.value: _profile_summary(profile.weekend_cells),
+            "slots": _profile_summary(profile.cells),
             "battery_share": {
                 "value": model.battery_share.value,
                 "observation_count": battery_share.sample_count,

@@ -5,7 +5,7 @@
 
 Home Battery Runtime is a local Home Assistant custom integration that estimates
 when a home battery will reach its configured reserve state of charge (SoC). It
-combines current battery conditions with a learned time-of-week household load
+combines current battery conditions with a learned time-of-day household load
 profile. No cloud service, external API, telemetry, or machine-learning library
 is required.
 
@@ -131,7 +131,7 @@ profile-based forecast, each future baseline is:
 baseline_discharge_w = historical_home_load_w * learned_battery_share
 ```
 
-The model chooses weekday or weekend history for each future local date.
+The model uses one shared local-time history for every future date.
 Current home load and active battery discharge use time-based smoothing so the
 result is independent of how frequently source entities update. The current-load
 adjustment is itself smoothed before being applied to the profile, then decays
@@ -147,10 +147,8 @@ On first setup, the integration asks Home Assistant Recorder for up to 28 days
 of available five-minute mean statistics. Recorder can retain less high-
 resolution history; all compatible data that is available is used.
 
-Observations are converted to Home Assistant's local timezone and grouped by:
-
-- Weekday or weekend.
-- One of 96 fifteen-minute slots in a day.
+Observations are converted to Home Assistant's local timezone and grouped into
+one of 96 fifteen-minute slots in a day.
 
 Each slot learns an exponentially weighted mean home load, variance, effective
 sample weight, valid-observation count, and last-update time. During active
@@ -166,15 +164,12 @@ active discharge. Unknown, unavailable, non-numeric, non-finite, and negative
 home-load samples are rejected. Ratio outliers are bounded, and only aggregate
 profile data, not raw power history, is persisted.
 
-Each weekday or weekend category reached during profile integration must have at
-least four populated cells. A missing exact future slot then uses the
-effective-weighted mean of populated cells from the same category; it never
-borrows from the other category. Exact-slot history coverage excludes these
-substituted values.
+Profile integration requires at least four populated cells. A missing exact
+future slot uses the effective-weighted mean of all populated cells. Exact-slot
+history coverage excludes these substituted values.
 
-If the forecast reaches a weekday or weekend category with fewer than four
-populated cells, runtime uses smoothed current battery discharge as a
-constant-power fallback:
+If the shared profile has fewer than four populated cells, runtime uses smoothed
+current battery discharge as a constant-power fallback:
 
 ```text
 runtime_h = remaining_kWh / (smoothed_discharge_w / 1000)
