@@ -66,6 +66,8 @@ _LOGGER = logging.getLogger(__name__)
 ACTIVE_PREDICTION_STATUSES = frozenset(
     (
         PredictionStatus.DISCHARGING,
+        PredictionStatus.IDLE,
+        PredictionStatus.CHARGING,
         PredictionStatus.LEARNING,
         PredictionStatus.BEYOND_HORIZON,
     )

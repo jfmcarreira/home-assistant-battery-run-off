@@ -123,36 +123,34 @@ def test_sensor_descriptions_match_home_assistant_semantics(
     assert average.state_class is SensorStateClass.MEASUREMENT
 
 
-@pytest.mark.parametrize(
-    "status",
-    [
-        PredictionStatus.IDLE,
-        PredictionStatus.CHARGING,
-        PredictionStatus.SOURCE_UNAVAILABLE,
-    ],
-)
-def test_non_active_states_never_expose_stale_forecasts(
-    battery_entry: MockConfigEntry, status: PredictionStatus
+def test_unavailable_source_never_exposes_stale_forecasts(
+    battery_entry: MockConfigEntry,
 ) -> None:
     """Only the reason sensor remains known when no forecast is meaningful."""
     coordinator, entities = _entities(battery_entry, _result())
-    coordinator.data = _result(status)
+    coordinator.data = _result(PredictionStatus.SOURCE_UNAVAILABLE)
 
     assert entities["estimated_depletion_time"].native_value is None
     assert entities["estimated_runtime"].native_value is None
-    assert entities["prediction_status"].native_value == status.value
+    assert entities["prediction_status"].native_value == "source_unavailable"
     assert entities["prediction_confidence"].native_value is None
     assert entities["history_coverage"].native_value is None
     assert entities["forecast_average_discharge"].native_value is None
 
 
 @pytest.mark.parametrize(
-    "status", [PredictionStatus.DISCHARGING, PredictionStatus.LEARNING]
+    "status",
+    [
+        PredictionStatus.DISCHARGING,
+        PredictionStatus.IDLE,
+        PredictionStatus.CHARGING,
+        PredictionStatus.LEARNING,
+    ],
 )
 def test_actionable_forecast_values_are_exposed(
     battery_entry: MockConfigEntry, status: PredictionStatus
 ) -> None:
-    """Profile and fallback forecasts expose both primary native values."""
+    """Actual and hypothetical forecasts expose both primary native values."""
     _, entities = _entities(battery_entry, _result(status))
 
     assert entities["estimated_depletion_time"].native_value == NOW

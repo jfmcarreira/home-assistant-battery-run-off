@@ -10,8 +10,8 @@ profile. No cloud service, external API, telemetry, or machine-learning library
 is required.
 
 The forecast is conditional: it answers **when the battery would reach reserve
-if active discharge continues**. It does not predict future solar production,
-charging, or a scheduled change in battery operating mode.
+if it started or continued discharging now**. It does not predict future solar
+production, charging, or a scheduled change in battery operating mode.
 
 This integration requires Home Assistant `2026.8.0` or newer.
 
@@ -75,15 +75,17 @@ entity IDs.
 
 | Sensor | Semantics |
 | --- | --- |
-| Estimated battery depletion time | Timezone-aware timestamp at which SoC is forecast to reach reserve |
-| Estimated battery runtime | Decimal hours remaining until reserve, exposed as a duration sensor |
+| Estimated battery depletion time | Timezone-aware timestamp at which SoC would reach reserve if discharge started or continued now |
+| Estimated battery runtime | Decimal hours until reserve if discharge started or continued now, exposed as a duration sensor |
 
-Both primary sensors are unknown while the battery is idle or charging, source
-data is invalid or unavailable, or no meaningful forecast exists. They never
-retain an old result and present it as a current forecast. A forecast that does
-not reach reserve within 48 hours is also unknown; the status sensor explains
-that result. While actively discharging at or below reserve, runtime is zero and
-depletion time is the current time.
+Both primary sensors remain populated while the battery is idle, charging, or
+charged. These values are hypothetical and use the current SoC and the demand
+the battery is expected to supply if discharge starts now. They are unknown when
+source data is invalid or unavailable, or no meaningful forecast exists. They
+never retain an old result and present it as a current forecast. A forecast that
+does not reach reserve within 48 hours is also unknown; the status sensor
+explains that result. At or below reserve, runtime is zero and depletion time is
+the current time.
 
 The following diagnostic sensors are disabled by default. Enable them from the
 integration device's entity list when needed.
@@ -93,15 +95,15 @@ integration device's entity list when needed.
 | Prediction status | `discharging`, `idle`, `charging`, `learning`, `source_unavailable`, or `beyond_horizon` |
 | Prediction confidence | `low`, `medium`, or `high`; model-quality classification, not a probability |
 | History coverage | Percentage of forecast-relevant time slots backed by learned observations |
-| Forecast average discharge | Average power demand in watts used by the active forecast |
+| Forecast average discharge | Average power demand in watts used by the actual or hypothetical forecast |
 
 Status values have these exact meanings:
 
 | Status | Meaning |
 | --- | --- |
-| `discharging` | A profile-based forecast is active |
-| `idle` | Normalized battery discharge is below the configured threshold |
-| `charging` | Normalized battery power indicates charging |
+| `discharging` | A profile-based forecast is active while the battery discharges |
+| `idle` | A hypothetical forecast is active and normalized battery discharge is below the configured threshold |
+| `charging` | A hypothetical forecast is active and normalized battery power indicates charging |
 | `learning` | History is insufficient and the constant-current fallback is active |
 | `source_unavailable` | At least one configured source has no valid numeric state or supported unit |
 | `beyond_horizon` | Predicted energy use does not reach reserve within 48 hours |
@@ -168,20 +170,25 @@ Profile integration requires at least four populated cells. A missing exact
 future slot uses the effective-weighted mean of all populated cells. Exact-slot
 history coverage excludes these substituted values.
 
-If the shared profile has fewer than four populated cells, runtime uses smoothed
-current battery discharge as a constant-power fallback:
+If the shared profile has fewer than four populated cells, runtime uses a
+constant-power fallback. During discharge this is the smoothed current battery
+power. While idle or charging it is the smoothed current home load multiplied by
+the learned battery-share ratio:
 
 ```text
 runtime_h = remaining_kWh / (smoothed_discharge_w / 1000)
 depletion_time = current_time + runtime_h
 ```
 
-Fallback results have status `learning` and low confidence. Learning continues
-automatically, is saved in batches, and survives Home Assistant restarts.
+Fallback results have low confidence. During active discharge they have status
+`learning`; idle and charging forecasts retain their operating status. Learning
+continues automatically, is saved in batches, and survives Home Assistant
+restarts.
 
 ## Limitations
 
-- Predictions are produced only during active battery discharge.
+- Idle and charging predictions assume discharge starts immediately at the
+  current SoC; they do not estimate the SoC at the end of the current charge.
 - Future solar generation and charging are not modeled.
 - Weather, tariffs, battery schedules, and per-appliance demand are not modeled.
 - Multiple config entries are independent; batteries are not combined into one
@@ -206,9 +213,7 @@ When no forecast is shown, first enable **Prediction status** and check:
 
 - All three source entities have numeric states and the power entities use `W`
   or `kW`.
-- Battery SoC is above reserve.
 - The selected sign makes discharge positive.
-- Normalized discharge is above the threshold.
 - `beyond_horizon` is not active.
 
 Use **Settings > Devices & services > Home Battery Runtime > Download

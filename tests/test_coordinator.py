@@ -153,15 +153,27 @@ async def test_unavailable_source_clears_prediction_and_recovers(
     assert recovered.runtime_hours is not None
 
 
-async def test_idle_does_not_schedule_minute_refresh(hass: HomeAssistant) -> None:
-    """Periodic minute recalculation is enabled only during active discharge."""
-    _set_states(hass, battery="0")
+@pytest.mark.parametrize(
+    ("battery", "expected_status"),
+    [
+        ("0", PredictionStatus.IDLE),
+        ("-1", PredictionStatus.CHARGING),
+    ],
+)
+async def test_idle_and_charging_forecasts_schedule_minute_refresh(
+    hass: HomeAssistant,
+    battery: str,
+    expected_status: PredictionStatus,
+) -> None:
+    """Hypothetical forecasts continue moving through the learned load profile."""
+    _set_states(hass, battery=battery)
     coordinator = BatteryRuntimeCoordinator(hass, _entry(hass))
 
     result = await coordinator._async_update_data()
 
-    assert result.status is PredictionStatus.IDLE
-    assert coordinator.update_interval is None
+    assert result.status is expected_status
+    assert result.runtime_hours == pytest.approx(6.25)
+    assert coordinator.update_interval == ACTIVE_REFRESH_INTERVAL
 
 
 async def test_setup_registers_listeners_and_shutdown_is_idempotent(

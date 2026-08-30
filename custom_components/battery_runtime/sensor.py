@@ -35,7 +35,12 @@ from .model import (
 type NativeSensorValue = str | int | float | datetime | None
 
 _FORECAST_STATUSES = frozenset(
-    (PredictionStatus.DISCHARGING, PredictionStatus.LEARNING)
+    (
+        PredictionStatus.DISCHARGING,
+        PredictionStatus.IDLE,
+        PredictionStatus.CHARGING,
+        PredictionStatus.LEARNING,
+    )
 )
 _DIAGNOSTIC_STATUSES = _FORECAST_STATUSES | {PredictionStatus.BEYOND_HORIZON}
 

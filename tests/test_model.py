@@ -643,17 +643,15 @@ def test_confidence_classification_exact_threshold_boundaries() -> None:
 
 
 @pytest.mark.parametrize(
-    ("soc", "home", "battery", "expected"),
+    ("soc", "home", "battery"),
     [
-        (None, 1000, 1000, PredictionStatus.SOURCE_UNAVAILABLE),
-        (50, -1, 1000, PredictionStatus.SOURCE_UNAVAILABLE),
-        (50, 1000, math.inf, PredictionStatus.SOURCE_UNAVAILABLE),
-        (50, 1000, 50, PredictionStatus.IDLE),
-        (50, 1000, -100, PredictionStatus.CHARGING),
+        (None, 1000, 1000),
+        (50, -1, 1000),
+        (50, 1000, math.inf),
     ],
 )
-def test_non_forecasting_statuses(soc, home, battery, expected) -> None:
-    """Bad, idle, and charging inputs never retain prediction values."""
+def test_unavailable_sources_do_not_produce_forecast_values(soc, home, battery) -> None:
+    """Invalid source data never retains prediction values."""
 
     result = _predict(
         BatteryRuntimeModel(_config()),
@@ -662,10 +660,51 @@ def test_non_forecasting_statuses(soc, home, battery, expected) -> None:
         battery_power_w=battery,
     )
 
-    assert result.status is expected
+    assert result.status is PredictionStatus.SOURCE_UNAVAILABLE
     assert result.runtime_hours is None
     assert result.depletion_time is None
     assert result.average_discharge_w is None
+
+
+@pytest.mark.parametrize(
+    ("soc", "battery", "expected_status", "expected_runtime"),
+    [
+        (50, 50, PredictionStatus.IDLE, 5),
+        (100, 0, PredictionStatus.IDLE, 10),
+        (50, -100, PredictionStatus.CHARGING, 5),
+    ],
+)
+def test_idle_and_charging_forecast_discharge_starting_now(
+    soc, battery, expected_status, expected_runtime
+) -> None:
+    """Non-discharging batteries use current demand for a hypothetical forecast."""
+
+    result = _predict(
+        BatteryRuntimeModel(_config()),
+        soc_percent=soc,
+        home_load_w=1000,
+        battery_power_w=battery,
+    )
+
+    assert result.status is expected_status
+    assert result.runtime_hours == pytest.approx(expected_runtime)
+    assert result.depletion_time == UTC_NOW + timedelta(hours=expected_runtime)
+    assert result.average_discharge_w == pytest.approx(1000)
+    assert result.used_fallback
+
+
+def test_charging_profile_forecast_ignores_current_charge_power() -> None:
+    """A hypothetical forecast uses expected demand, not incoming charge power."""
+
+    result = _predict(
+        BatteryRuntimeModel(_config(capacity_kwh=1), profile=_profile()),
+        battery_power_w=-5000,
+    )
+
+    assert result.status is PredictionStatus.CHARGING
+    assert result.runtime_hours == pytest.approx(1)
+    assert result.average_discharge_w == pytest.approx(1000)
+    assert not result.used_fallback
 
 
 def test_profile_and_model_round_trip_store_serialization() -> None:

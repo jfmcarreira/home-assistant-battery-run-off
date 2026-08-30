@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from enum import IntEnum, StrEnum
 from typing import Any, Self
@@ -767,38 +767,53 @@ class BatteryRuntimeModel:
         discharge = normalize_discharge_power(
             battery_power, self.config.battery_power_sign
         )
+        operating_status: PredictionStatus | None = None
         if discharge < -self.config.discharge_threshold_w:
-            return self._empty_result(PredictionStatus.CHARGING)
-        if discharge <= self.config.discharge_threshold_w:
-            return self._empty_result(PredictionStatus.IDLE)
+            operating_status = PredictionStatus.CHARGING
+        elif discharge <= self.config.discharge_threshold_w:
+            operating_status = PredictionStatus.IDLE
 
         remaining_energy = available_energy_kwh(
             self.config.capacity_kwh,
             soc,
             self.config.reserve_soc_percent,
         )
-        recent_discharge = (
-            self._recent_discharge.value
-            if self._recent_discharge.value is not None
-            else discharge
-        )
+        if operating_status is None:
+            starting_discharge = (
+                self._recent_discharge.value
+                if self._recent_discharge.value is not None
+                else discharge
+            )
+        else:
+            current_home_load = (
+                self._recent_home_load.value
+                if self._recent_home_load.value is not None
+                else home_load
+            )
+            starting_discharge = current_home_load * self.battery_share.value
         if remaining_energy == 0:
             return PredictionResult(
-                status=PredictionStatus.DISCHARGING,
+                status=operating_status or PredictionStatus.DISCHARGING,
                 confidence=PredictionConfidence.LOW,
                 depletion_time=now,
                 runtime_hours=0.0,
                 coverage_percent=0.0,
-                average_discharge_w=recent_discharge,
+                average_discharge_w=starting_discharge,
                 used_fallback=False,
             )
 
-        return self._profile_forecast(
+        result = self._profile_forecast(
             now,
             remaining_energy,
-            recent_discharge,
-            discharge,
+            starting_discharge,
+            discharge if operating_status is None else starting_discharge,
         )
+        if (
+            operating_status is not None
+            and result.status is not PredictionStatus.BEYOND_HORIZON
+        ):
+            return replace(result, status=operating_status)
+        return result
 
     @staticmethod
     def _empty_result(status: PredictionStatus) -> PredictionResult:
