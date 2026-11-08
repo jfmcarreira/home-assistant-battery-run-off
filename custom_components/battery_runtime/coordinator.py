@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import math
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -38,8 +39,11 @@ from .const import (
     CONF_DISCHARGE_THRESHOLD_W,
     CONF_HOME_CONSUMPTION_ENTITY,
     CONF_RESERVE_SOC,
+    CONF_RESERVE_SOC_ENTITY,
     DEFAULT_BATTERY_POWER_SIGN,
     DEFAULT_DISCHARGE_THRESHOLD_W,
+    MAX_RESERVE_SOC_PERCENT,
+    MIN_RESERVE_SOC_PERCENT,
     RECORDER_HISTORY_DAYS,
     SAMPLE_INTERVAL,
     SOURCE_ENTITY_KEYS,
@@ -94,6 +98,9 @@ class BatteryRuntimeCoordinator(DataUpdateCoordinator[PredictionResult]):
         self._source_identity = dict(
             zip(SOURCE_ENTITY_KEYS, self.source_entity_ids, strict=True)
         )
+        self.reserve_soc_entity_id = entry.data.get(CONF_RESERVE_SOC_ENTITY)
+        if self.reserve_soc_entity_id:
+            self.source_entity_ids += (self.reserve_soc_entity_id,)
         self.timezone_name = hass.config.time_zone
         self.configured_power_sign = ConfiguredBatteryPowerSign(
             entry.data.get(
@@ -186,6 +193,14 @@ class BatteryRuntimeCoordinator(DataUpdateCoordinator[PredictionResult]):
         """Read current source states and calculate a prediction."""
         now = dt_util.utcnow()
         soc_percent, home_load_w, battery_power_w = self._read_sources()
+        if self.reserve_soc_entity_id:
+            reserve = self._read_reserve_soc()
+            if reserve is None:
+                soc_percent = None
+            else:
+                self.model.config = replace(
+                    self.model.config, reserve_soc_percent=reserve
+                )
         self.model.update_current_conditions(now, home_load_w, battery_power_w)
         result = self.model.predict(
             PredictionInput(
@@ -224,6 +239,26 @@ class BatteryRuntimeCoordinator(DataUpdateCoordinator[PredictionResult]):
         except TypeError, ValueError:
             return None
         return value if math.isfinite(value) and 0 <= value <= 100 else None
+
+    def _read_reserve_soc(self) -> float | None:
+        """Read a dynamic reserve percentage, allowing unitless number helpers."""
+        state = self.hass.states.get(self.reserve_soc_entity_id)
+        if state is None or state.attributes.get(ATTR_UNIT_OF_MEASUREMENT) not in (
+            None,
+            "",
+            PERCENTAGE,
+        ):
+            return None
+        try:
+            value = float(state.state)
+        except TypeError, ValueError:
+            return None
+        return (
+            value
+            if math.isfinite(value)
+            and MIN_RESERVE_SOC_PERCENT <= value <= MAX_RESERVE_SOC_PERCENT
+            else None
+        )
 
     @staticmethod
     def _read_power(state: State | None, *, non_negative: bool = False) -> float | None:

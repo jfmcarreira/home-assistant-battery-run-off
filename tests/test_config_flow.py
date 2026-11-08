@@ -28,6 +28,7 @@ from custom_components.battery_runtime.const import (
     CONF_DISCHARGE_THRESHOLD_W,
     CONF_HOME_CONSUMPTION_ENTITY,
     CONF_RESERVE_SOC,
+    CONF_RESERVE_SOC_ENTITY,
     DEFAULT_DISCHARGE_THRESHOLD_W,
     DOMAIN,
     BatteryPowerSign,
@@ -119,6 +120,61 @@ async def test_user_flow(hass: HomeAssistant) -> None:
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == "House battery"
     assert result["data"] == _valid_input()
+
+
+@pytest.mark.parametrize("domain", ["number", "input_number"])
+@pytest.mark.parametrize("unit", [None, "", PERCENTAGE])
+async def test_dynamic_reserve_flow(
+    hass: HomeAssistant, domain: str, unit: str | None
+) -> None:
+    """Either number domain can supply a percentage, including unitless helpers."""
+    _set_valid_states(hass)
+    entity_id = f"{domain}.reserve"
+    attributes = {} if unit is None else {ATTR_UNIT_OF_MEASUREMENT: unit}
+    hass.states.async_set(entity_id, "20", attributes)
+    result = await _start_user_flow(hass)
+    with patch(
+        "custom_components.battery_runtime.async_setup_entry", return_value=True
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], _valid_input(**{CONF_RESERVE_SOC_ENTITY: entity_id})
+        )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_RESERVE_SOC_ENTITY] == entity_id
+
+
+@pytest.mark.parametrize(
+    ("state", "unit", "error"),
+    [
+        (None, None, "entity_not_found"),
+        ("unavailable", None, "entity_not_numeric"),
+        ("nan", None, "entity_not_numeric"),
+        ("-1", None, "invalid_reserve"),
+        ("100", PERCENTAGE, "invalid_reserve"),
+        ("20", "W", "invalid_soc_unit"),
+    ],
+)
+async def test_invalid_dynamic_reserve(
+    hass: HomeAssistant, state: str | None, unit: str | None, error: str
+) -> None:
+    """Validate the current dynamic reserve before accepting configuration."""
+    _set_valid_states(hass)
+    entity_id = "input_number.reserve"
+    if state is not None:
+        attributes = {} if unit is None else {ATTR_UNIT_OF_MEASUREMENT: unit}
+        hass.states.async_set(entity_id, state, attributes)
+    result = await _start_user_flow(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], _valid_input(**{CONF_RESERVE_SOC_ENTITY: entity_id})
+    )
+    assert result["errors"] == {CONF_RESERVE_SOC_ENTITY: error}
+
+
+@pytest.mark.parametrize("entity_id", ["sensor.reserve", "bad", 123])
+def test_invalid_reserve_entity_domain(entity_id: object) -> None:
+    """Reject unsupported domains even if the selector is bypassed."""
+    _, errors = _normalize_input(_valid_input(**{CONF_RESERVE_SOC_ENTITY: entity_id}))
+    assert errors == {CONF_RESERVE_SOC_ENTITY: "invalid_reserve_entity"}
 
 
 async def test_default_threshold(hass: HomeAssistant) -> None:
@@ -410,3 +466,32 @@ async def test_reconfigure_rejects_duplicate(hass: HomeAssistant) -> None:
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": "already_configured"}
     assert entry.title == "Other battery"
+
+
+@pytest.mark.parametrize("dynamic", [True, False])
+async def test_reconfigure_reserve_source(hass: HomeAssistant, dynamic: bool) -> None:
+    """Reconfiguration can switch both to and from an entity-backed reserve."""
+    _set_valid_states(hass)
+    entity_id = "input_number.reserve"
+    hass.states.async_set(entity_id, "20")
+    dynamic_input = _valid_input(**{CONF_RESERVE_SOC_ENTITY: entity_id})
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="House battery",
+        data=_valid_input() if dynamic else dynamic_input,
+    )
+    entry.add_to_hass(hass)
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={
+            "source": config_entries.SOURCE_RECONFIGURE,
+            "entry_id": entry.entry_id,
+        },
+    )
+    updated = dynamic_input if dynamic else _valid_input()
+    with patch.object(hass.config_entries, "async_schedule_reload"):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], updated
+        )
+    assert result["reason"] == "reconfigure_successful"
+    assert entry.data == updated

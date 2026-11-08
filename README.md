@@ -50,6 +50,7 @@ entry for each independently measured battery.
 | Battery power entity | Numeric battery power in W or kW |
 | Battery capacity | Positive usable, deliverable capacity in kWh |
 | Reserve SoC | Percentage from 0 through 99 |
+| Reserve SoC entity (optional) | A `number` or `input_number` entity that overrides the static reserve; accepts 0–99, with `%` or no unit |
 | Battery power sign | Whether positive or negative values mean discharge |
 | Discharge threshold | Non-negative noise threshold in watts; default 50 W |
 
@@ -66,6 +67,11 @@ negative-discharge when discharge values are negative.
 Changing a source entity, the battery power sign, or Home Assistant's timezone
 invalidates incompatible learned history. Changing the name, capacity, reserve,
 or discharge threshold preserves it.
+
+When a reserve SoC entity is selected, its current value is used and changes
+automatically refresh predictions without resetting learned history. If that
+entity is missing, unavailable, non-numeric, or outside 0–99, predictions become
+unavailable until it recovers. Clear the entity selection to use the static reserve.
 
 ## Sensors
 

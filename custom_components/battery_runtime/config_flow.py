@@ -8,6 +8,8 @@ from typing import Any
 
 import voluptuous as vol
 from homeassistant import config_entries
+from homeassistant.components.input_number import DOMAIN as INPUT_NUMBER_DOMAIN
+from homeassistant.components.number import DOMAIN as NUMBER_DOMAIN
 from homeassistant.components.sensor import DOMAIN as SENSOR_DOMAIN
 from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.const import (
@@ -29,6 +31,7 @@ from .const import (
     CONF_DISCHARGE_THRESHOLD_W,
     CONF_HOME_CONSUMPTION_ENTITY,
     CONF_RESERVE_SOC,
+    CONF_RESERVE_SOC_ENTITY,
     DEFAULT_BATTERY_POWER_SIGN,
     DEFAULT_DISCHARGE_THRESHOLD_W,
     DOMAIN,
@@ -90,6 +93,9 @@ CONFIG_SCHEMA = vol.Schema(
                 unit_of_measurement=PERCENTAGE,
             )
         ),
+        vol.Optional(CONF_RESERVE_SOC_ENTITY): selector.EntitySelector(
+            selector.EntitySelectorConfig(domain=[NUMBER_DOMAIN, INPUT_NUMBER_DOMAIN])
+        ),
         vol.Required(
             CONF_BATTERY_POWER_SIGN,
             default=DEFAULT_BATTERY_POWER_SIGN.value,
@@ -137,6 +143,16 @@ def _normalize_input(
         ):
             errors[key] = "invalid_entity"
 
+    if (entity_id := data.get(CONF_RESERVE_SOC_ENTITY)) is not None:
+        if (
+            not isinstance(entity_id, str)
+            or not valid_entity_id(entity_id)
+            or entity_id.split(".", 1)[0] not in (NUMBER_DOMAIN, INPUT_NUMBER_DOMAIN)
+        ):
+            errors[CONF_RESERVE_SOC_ENTITY] = "invalid_reserve_entity"
+    else:
+        data.pop(CONF_RESERVE_SOC_ENTITY, None)
+
     numeric_fields = (
         (CONF_CAPACITY_KWH, "invalid_capacity", lambda value: value > 0),
         (
@@ -176,7 +192,7 @@ def _validate_entity_state(
     hass: HomeAssistant,
     entity_id: str,
     *,
-    expected_units: frozenset[str],
+    expected_units: frozenset[str | None],
     value_range: tuple[float, float] | None = None,
     non_negative: bool = False,
 ) -> str | None:
@@ -230,6 +246,17 @@ def _validate_source_entities(
     for key, kwargs in validations:
         if error := _validate_entity_state(hass, data[key], **kwargs):
             errors[key] = error
+    if (entity_id := data.get(CONF_RESERVE_SOC_ENTITY)) and (
+        error := _validate_entity_state(
+            hass,
+            entity_id,
+            expected_units=frozenset((PERCENTAGE, None, "")),
+            value_range=(MIN_RESERVE_SOC_PERCENT, MAX_RESERVE_SOC_PERCENT),
+        )
+    ):
+        errors[CONF_RESERVE_SOC_ENTITY] = (
+            "invalid_reserve" if error == "invalid_soc_value" else error
+        )
     return errors
 
 

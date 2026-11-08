@@ -24,6 +24,7 @@ from custom_components.battery_runtime.const import (
     CONF_DISCHARGE_THRESHOLD_W,
     CONF_HOME_CONSUMPTION_ENTITY,
     CONF_RESERVE_SOC,
+    CONF_RESERVE_SOC_ENTITY,
     DOMAIN,
     SAMPLE_INTERVAL,
     BatteryPowerSign,
@@ -151,6 +152,96 @@ async def test_unavailable_source_clears_prediction_and_recovers(
     recovered = await coordinator._async_update_data()
     assert recovered.status is PredictionStatus.LEARNING
     assert recovered.runtime_hours is not None
+
+
+@pytest.mark.parametrize("domain", ["number", "input_number"])
+async def test_dynamic_reserve_updates_prediction(
+    hass: HomeAssistant, domain: str
+) -> None:
+    """Reserve updates change forecasts without replacing learned model state."""
+    _set_states(hass)
+    entity_id = f"{domain}.reserve"
+    hass.states.async_set(entity_id, "20")
+    coordinator = BatteryRuntimeCoordinator(
+        hass, _entry(hass, **{CONF_RESERVE_SOC_ENTITY: entity_id})
+    )
+    model = coordinator.model
+    assert entity_id in coordinator.source_entity_ids
+    assert (
+        CONF_RESERVE_SOC_ENTITY
+        not in coordinator._storage_identity()["source_entities"]
+    )
+    result = await coordinator._async_update_data()
+    assert result.runtime_hours == pytest.approx(4)
+
+    hass.states.async_set(entity_id, "40", {ATTR_UNIT_OF_MEASUREMENT: PERCENTAGE})
+    result = await coordinator._async_update_data()
+    assert result.runtime_hours == pytest.approx(2)
+    assert coordinator.model is model
+
+    hass.states.async_set(entity_id, "60")
+    result = await coordinator._async_update_data()
+    assert result.runtime_hours == 0
+
+
+@pytest.mark.parametrize(
+    ("state", "unit"),
+    [
+        (None, None),
+        ("unavailable", None),
+        ("unknown", None),
+        ("nan", None),
+        ("inf", None),
+        ("-1", None),
+        ("100", PERCENTAGE),
+        ("20", "W"),
+    ],
+)
+async def test_dynamic_reserve_unavailable_and_recovery(
+    hass: HomeAssistant, state: str | None, unit: str | None
+) -> None:
+    """Never substitute the static or last valid reserve for an invalid entity."""
+    _set_states(hass)
+    entity_id = "input_number.reserve"
+    coordinator = BatteryRuntimeCoordinator(
+        hass, _entry(hass, **{CONF_RESERVE_SOC_ENTITY: entity_id})
+    )
+    hass.states.async_set(entity_id, "20")
+    await coordinator._async_update_data()
+    if state is None:
+        hass.states.async_remove(entity_id)
+    else:
+        attributes = {} if unit is None else {ATTR_UNIT_OF_MEASUREMENT: unit}
+        hass.states.async_set(entity_id, state, attributes)
+    result = await coordinator._async_update_data()
+    assert result.status is PredictionStatus.SOURCE_UNAVAILABLE
+    assert result.runtime_hours is None
+    assert result.depletion_time is None
+    assert coordinator.update_interval is None
+
+    hass.states.async_set(entity_id, "30")
+    result = await coordinator._async_update_data()
+    assert result.runtime_hours == pytest.approx(3)
+    assert coordinator.update_interval == ACTIVE_REFRESH_INTERVAL
+
+
+async def test_dynamic_reserve_state_change_refreshes(hass: HomeAssistant) -> None:
+    """The reserve entity is included in the real state-change subscription."""
+    _set_states(hass)
+    entity_id = "input_number.reserve"
+    hass.states.async_set(entity_id, "20")
+    coordinator = BatteryRuntimeCoordinator(
+        hass, _entry(hass, **{CONF_RESERVE_SOC_ENTITY: entity_id})
+    )
+    with (
+        patch.object(coordinator, "_async_restore_model", return_value=True),
+        patch.object(coordinator, "async_request_refresh") as refresh,
+    ):
+        await coordinator._async_setup()
+        hass.states.async_set(entity_id, "30")
+        await hass.async_block_till_done()
+        refresh.assert_awaited_once()
+    await coordinator.async_shutdown()
 
 
 @pytest.mark.parametrize(

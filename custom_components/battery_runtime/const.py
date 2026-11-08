@@ -16,6 +16,7 @@ CONF_HOME_CONSUMPTION_ENTITY: Final = "home_consumption_entity"
 CONF_BATTERY_POWER_ENTITY: Final = "battery_power_entity"
 CONF_CAPACITY_KWH: Final = "capacity_kwh"
 CONF_RESERVE_SOC: Final = "reserve_soc"
+CONF_RESERVE_SOC_ENTITY: Final = "reserve_soc_entity"
 CONF_BATTERY_POWER_SIGN: Final = "battery_power_sign"
 CONF_DISCHARGE_THRESHOLD_W: Final = "discharge_threshold_w"
 

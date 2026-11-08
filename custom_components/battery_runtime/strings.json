@@ -12,8 +12,12 @@
           "battery_power_entity": "Battery power",
           "capacity_kwh": "Battery capacity",
           "reserve_soc": "Reserve state of charge",
+          "reserve_soc_entity": "Reserve state of charge entity (optional)",
           "battery_power_sign": "Battery discharge sign",
           "discharge_threshold_w": "Discharge threshold"
+        },
+        "data_description": {
+          "reserve_soc_entity": "Select a number or input_number to override the static reserve (0–99%). Leave empty to use the static value."
         }
       },
       "reconfigure": {
@@ -26,8 +30,12 @@
           "battery_power_entity": "Battery power",
           "capacity_kwh": "Battery capacity",
           "reserve_soc": "Reserve state of charge",
+          "reserve_soc_entity": "Reserve state of charge entity (optional)",
           "battery_power_sign": "Battery discharge sign",
           "discharge_threshold_w": "Discharge threshold"
+        },
+        "data_description": {
+          "reserve_soc_entity": "Select a number or input_number to override the static reserve (0–99%). Leave empty to use the static value."
         }
       }
     },
@@ -41,7 +49,8 @@
       "invalid_power_sign": "Select whether positive or negative battery power means discharge.",
       "invalid_power_unit": "The selected power entity must use W or kW.",
       "invalid_reserve": "Reserve state of charge must be between 0% and 99%.",
-      "invalid_soc_unit": "The battery state of charge entity must use %.",
+      "invalid_reserve_entity": "Select a number or input_number entity.",
+      "invalid_soc_unit": "State of charge entities must use %. Reserve entities may also be unitless.",
       "invalid_soc_value": "The battery state of charge must currently be between 0% and 100%.",
       "invalid_threshold": "The discharge threshold must be a finite value of 0 W or greater.",
       "negative_home_consumption": "Home consumption must currently be non-negative. Select a whole-home demand sensor rather than grid import or export."
