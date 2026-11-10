@@ -25,7 +25,7 @@ PROFILE_EWMA_ALPHA = 0.2
 CURRENT_LOAD_TIME_CONSTANT = timedelta(minutes=10)
 CURRENT_DISCHARGE_TIME_CONSTANT = timedelta(minutes=10)
 LOAD_ADJUSTMENT_TIME_CONSTANT = timedelta(minutes=20)
-CURRENT_ADJUSTMENT_DECAY_HOURS = 3.0
+CURRENT_ADJUSTMENT_HORIZON_HOURS = 0.5
 MIN_PROFILE_CELLS = 4
 
 BATTERY_SHARE_MIN_SAMPLES = 3
@@ -798,7 +798,7 @@ class BatteryRuntimeModel:
                 depletion_time=now,
                 runtime_hours=0.0,
                 coverage_percent=0.0,
-                average_discharge_w=starting_discharge,
+                average_discharge_w=None,
                 used_fallback=False,
             )
 
@@ -892,8 +892,11 @@ class BatteryRuntimeModel:
             if estimate.home_load_w is None:
                 baseline_discharge = recent_discharge_w
             else:
-                adjustment = 1.0 + (current_adjustment - 1.0) * math.exp(
-                    -midpoint_hours / CURRENT_ADJUSTMENT_DECAY_HOURS
+                # A temporary load should affect only the near term, not scale
+                # unrelated household activity several hours into the future.
+                adjustment = 1.0 + (current_adjustment - 1.0) * max(
+                    1.0 - midpoint_hours / CURRENT_ADJUSTMENT_HORIZON_HOURS,
+                    0.0,
                 )
                 baseline_discharge = estimate.home_load_w * share * adjustment
 

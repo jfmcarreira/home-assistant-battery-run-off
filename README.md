@@ -101,7 +101,7 @@ integration device's entity list when needed.
 | Prediction status | `discharging`, `idle`, `charging`, `learning`, `source_unavailable`, or `beyond_horizon` |
 | Prediction confidence | `low`, `medium`, or `high`; model-quality classification, not a probability |
 | History coverage | Percentage of forecast-relevant time slots backed by learned observations |
-| Forecast average discharge | Average power demand in watts used by the actual or hypothetical forecast |
+| Forecast average discharge | Average power demand in watts used by the actual or hypothetical forecast; unknown at or below reserve |
 
 Status values have these exact meanings:
 
@@ -142,8 +142,9 @@ baseline_discharge_w = historical_home_load_w * learned_battery_share
 The model uses one shared local-time history for every future date.
 Current home load and active battery discharge use time-based smoothing so the
 result is independent of how frequently source entities update. The current-load
-adjustment is itself smoothed before being applied to the profile, then decays
-toward the learned baseline over about three hours. Short battery-power spikes
+adjustment is itself smoothed before being applied to the profile, then tapers
+linearly to the learned baseline within the first 30 forecast minutes. Later
+steps use the unadjusted learned baseline. Short battery-power spikes
 are not injected directly into the profile forecast. Predicted watts are
 integrated in five-minute steps and converted to kWh. The final step is
 interpolated to produce a more precise depletion timestamp, and forecasting
@@ -203,8 +204,9 @@ restarts.
 - Confidence describes input coverage and consistency, not an error interval or
   statistical probability.
 - Large temporary loads can still move the estimate, but current-load and
-  adjustment smoothing are intended to make short spikes have only a small
-  effect while sustained load changes gradually influence the forecast.
+  adjustment smoothing limit short spikes. Sustained load changes gradually
+  influence only the next 30 forecast minutes; recurring loads also update the
+  learned time-of-day profile.
 - Forecast quality depends on accurate SoC, whole-home demand, battery power,
   units, sign convention, usable capacity, reserve, Recorder history, and local
   timezone.

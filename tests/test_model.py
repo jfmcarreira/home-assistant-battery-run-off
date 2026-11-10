@@ -353,15 +353,41 @@ def test_profile_constant_load_runtime_and_reserve_are_exact() -> None:
     assert not result.used_fallback
 
 
-def test_soc_at_or_below_reserve_has_zero_runtime() -> None:
-    """No positive runtime is exposed once reserve has been reached."""
+@pytest.mark.parametrize("soc_percent", [10, 20])
+@pytest.mark.parametrize("learned", [False, True])
+@pytest.mark.parametrize(
+    ("battery_power_w", "status"),
+    [
+        (1000, PredictionStatus.DISCHARGING),
+        (0, PredictionStatus.IDLE),
+        (-1000, PredictionStatus.CHARGING),
+    ],
+)
+def test_soc_at_or_below_reserve_has_zero_runtime(
+    soc_percent: float,
+    learned: bool,
+    battery_power_w: float,
+    status: PredictionStatus,
+) -> None:
+    """Zero-runtime results never mislabel current demand as a forecast mean."""
 
-    model = BatteryRuntimeModel(_config(capacity_kwh=10, reserve_soc_percent=20))
-    result = _predict(model, soc_percent=20)
+    model = BatteryRuntimeModel(
+        _config(capacity_kwh=10, reserve_soc_percent=20),
+        profile=_profile() if learned else None,
+    )
+    model.update_current_conditions(UTC_NOW, 2000, battery_power_w)
+    result = _predict(
+        model,
+        soc_percent=soc_percent,
+        home_load_w=2000,
+        battery_power_w=battery_power_w,
+    )
 
-    assert result.status is PredictionStatus.DISCHARGING
+    assert result.status is status
     assert result.runtime_hours == 0
     assert result.depletion_time == UTC_NOW
+    assert result.average_discharge_w is None
+    assert not result.used_fallback
 
 
 def test_negative_discharge_sign_produces_same_prediction() -> None:
@@ -526,7 +552,77 @@ def test_sustained_load_change_still_adjusts_profile_forecast() -> None:
     )
 
     assert result.runtime_hours is not None
-    assert 1.3 < result.runtime_hours < 1.7
+    assert 1.85 < result.runtime_hours < 2
+
+
+@pytest.mark.parametrize("home_load_w", [500, 3000])
+@pytest.mark.parametrize("capacity_kwh", [0.1, 2, 10])
+def test_current_adjustment_has_a_bounded_near_term_energy_effect(
+    home_load_w: float, capacity_kwh: float
+) -> None:
+    """Long forecasts cannot accumulate hours of current-load corrections."""
+
+    model = BatteryRuntimeModel(_config(capacity_kwh=capacity_kwh), profile=_profile())
+    for minute in range(121):
+        model.update_current_conditions(
+            UTC_NOW + timedelta(minutes=minute), home_load_w, home_load_w
+        )
+    timestamp = UTC_NOW + timedelta(hours=2)
+    # Restoring aggregates retains the exact same profile and battery share,
+    # but clears transient adjustments for a profile-only comparison.
+    baseline = BatteryRuntimeModel.from_dict(model.config, model.to_dict())
+    normal = _predict(baseline, timestamp=timestamp)
+    adjusted = _predict(
+        model,
+        timestamp=timestamp,
+        home_load_w=home_load_w,
+        battery_power_w=home_load_w,
+    )
+
+    assert normal.runtime_hours == pytest.approx(capacity_kwh)
+    assert adjusted.runtime_hours is not None
+    assert adjusted.average_discharge_w is not None
+    if home_load_w > 1000:
+        # At most 60% extra demand, tapering to zero within 30 minutes:
+        # 1000 W * 0.6 * 0.5 h / 2 = 150 Wh, or 0.15 baseline hours.
+        assert 0 < normal.runtime_hours - adjusted.runtime_hours <= 0.15
+        if capacity_kwh == 0.1:
+            assert 1200 < adjusted.average_discharge_w < 1600
+    else:
+        # The corresponding maximum reduction is 100 Wh.
+        assert 0 < adjusted.runtime_hours - normal.runtime_hours <= 0.1
+        if capacity_kwh == 0.1:
+            assert 600 < adjusted.average_discharge_w < 850
+
+
+@pytest.mark.parametrize("battery_power_w", [0, -1000, 2200])
+def test_sustained_load_with_live_learning_does_not_scale_the_whole_forecast(
+    battery_power_w: float,
+) -> None:
+    """An hour-long appliance load stays local even while aggregates learn."""
+
+    model = BatteryRuntimeModel(_config(capacity_kwh=6), profile=_profile())
+    for minute in range(61):
+        timestamp = UTC_NOW + timedelta(minutes=minute)
+        home_load_w = 1000 if minute == 0 else 2000
+        if minute % 5 == 0:
+            model.observe(timestamp, home_load_w, battery_power_w)
+        model.update_current_conditions(timestamp, home_load_w, battery_power_w)
+
+    baseline = BatteryRuntimeModel.from_dict(model.config, model.to_dict())
+    normal = _predict(
+        baseline, timestamp=timestamp, home_load_w=2000, battery_power_w=battery_power_w
+    )
+    adjusted = _predict(
+        model, timestamp=timestamp, home_load_w=2000, battery_power_w=battery_power_w
+    )
+
+    assert normal.average_discharge_w is not None
+    assert adjusted.average_discharge_w is not None
+    assert normal.average_discharge_w < adjusted.average_discharge_w
+    assert adjusted.average_discharge_w < normal.average_discharge_w * 1.05
+    assert adjusted.status is normal.status
+    assert not adjusted.used_fallback
 
 
 def test_missing_cells_use_shared_average_and_report_low_coverage() -> None:

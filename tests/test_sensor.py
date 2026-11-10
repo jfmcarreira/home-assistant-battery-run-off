@@ -14,7 +14,10 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.battery_runtime.const import DOMAIN
 from custom_components.battery_runtime.model import (
+    BatteryRuntimeModel,
+    ModelConfig,
     PredictionConfidence,
+    PredictionInput,
     PredictionResult,
     PredictionStatus,
 )
@@ -177,3 +180,22 @@ def test_beyond_horizon_keeps_only_meaningful_diagnostics(
     assert entities["prediction_confidence"].native_value == "medium"
     assert entities["history_coverage"].native_value == 75.0
     assert entities["forecast_average_discharge"].native_value == 900.0
+
+
+@pytest.mark.parametrize("battery_power_w", [0, -1000, 1000])
+def test_reserve_hides_discharge_diagnostic_and_recovers(
+    battery_entry: MockConfigEntry, battery_power_w: float
+) -> None:
+    """Entities expose unknown, not current watts, until a forecast resumes."""
+    model = BatteryRuntimeModel(ModelConfig(10, 20, "UTC"))
+    active = model.predict(PredictionInput(NOW, 60, 1000, battery_power_w))
+    coordinator, entities = _entities(battery_entry, active)
+    assert entities["forecast_average_discharge"].native_value == 1000
+
+    coordinator.data = model.predict(PredictionInput(NOW, 20, 3000, battery_power_w))
+    assert entities["estimated_runtime"].native_value == 0
+    assert entities["estimated_depletion_time"].native_value == NOW
+    assert entities["forecast_average_discharge"].native_value is None
+
+    coordinator.data = active
+    assert entities["forecast_average_discharge"].native_value == 1000

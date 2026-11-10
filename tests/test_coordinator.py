@@ -182,6 +182,12 @@ async def test_dynamic_reserve_updates_prediction(
     hass.states.async_set(entity_id, "60")
     result = await coordinator._async_update_data()
     assert result.runtime_hours == 0
+    assert result.average_discharge_w is None
+
+    hass.states.async_set(entity_id, "20")
+    result = await coordinator._async_update_data()
+    assert result.runtime_hours == pytest.approx(4)
+    assert result.average_discharge_w == pytest.approx(1000)
 
 
 @pytest.mark.parametrize(

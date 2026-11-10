@@ -14,5 +14,5 @@
   "iot_class": "calculated",
   "issue_tracker": "https://github.com/jfmcarreira/home-assistant-battery-run-off/issues",
   "requirements": [],
-  "version": "0.4.0"
+  "version": "0.5.0"
 }
