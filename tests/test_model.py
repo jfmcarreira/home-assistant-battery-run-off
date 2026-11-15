@@ -79,6 +79,118 @@ def _predict(
     )
 
 
+@pytest.mark.parametrize("hours", [0, -1, 2.5, 6])
+def test_household_energy_constant_and_empty_intervals(hours: float) -> None:
+    model = BatteryRuntimeModel(_config(), profile=_profile())
+    assert model.estimate_energy_kwh(
+        UTC_NOW, UTC_NOW + timedelta(hours=hours)
+    ) == pytest.approx(max(hours, 0))
+
+
+def test_household_energy_partial_slots_and_weighted_fallback() -> None:
+    model = BatteryRuntimeModel(_config())
+    model.observe(UTC_NOW, 1000, None)
+    model.observe(UTC_NOW + timedelta(minutes=15), 2000, None)
+    # 5 minutes at 1 kW, 15 at 2 kW, then 5 at the 1.5 kW shared mean.
+    assert model.estimate_energy_kwh(
+        UTC_NOW + timedelta(minutes=10), UTC_NOW + timedelta(minutes=35)
+    ) == pytest.approx(1 / 12 + 0.5 + 0.125)
+
+
+@pytest.mark.parametrize("current", [None, 0, 1000, float("nan"), -1])
+def test_household_energy_empty_profile_has_no_current_power_fallback(current) -> None:
+    model = BatteryRuntimeModel(_config())
+    assert (
+        model.estimate_energy_kwh(
+            UTC_NOW, UTC_NOW + timedelta(hours=1), home_load_w=current
+        )
+        is None
+    )
+    assert model.estimate_energy_kwh(UTC_NOW, UTC_NOW, home_load_w=current) == 0
+
+
+@pytest.mark.parametrize("naive_start", [True, False])
+def test_household_energy_rejects_naive_endpoints(naive_start: bool) -> None:
+    model = BatteryRuntimeModel(_config())
+    naive = UTC_NOW.replace(tzinfo=None)
+    with pytest.raises(ValueError, match="timezone-aware"):
+        model.estimate_energy_kwh(
+            naive if naive_start else UTC_NOW,
+            UTC_NOW if naive_start else naive,
+        )
+
+
+@pytest.mark.parametrize(("month", "day", "hours"), [(3, 29, 23), (10, 25, 25)])
+def test_household_energy_dst_days_and_variable_repeated_slots(
+    month: int, day: int, hours: int
+) -> None:
+    zone = ZoneInfo("Europe/Lisbon")
+    start = datetime(2026, month, day, tzinfo=zone)
+    end = start + timedelta(days=1)
+    profile = _profile(timezone_name=zone.key)
+    model = BatteryRuntimeModel(_config(timezone_name=zone.key), profile=profile)
+    assert model.estimate_energy_kwh(start, end) == pytest.approx(hours)
+    # Local 01:00-02:00 is skipped in spring and repeated in autumn.
+    for slot in range(4, 8):
+        profile.cells[slot].mean = 2000
+    assert model.estimate_energy_kwh(start, end) == pytest.approx(
+        hours + (2 if month == 10 else 0)
+    )
+
+
+def test_household_energy_dst_fold_ordering_and_fractional_seconds() -> None:
+    zone = ZoneInfo("Europe/Lisbon")
+    model = BatteryRuntimeModel(
+        _config(timezone_name=zone.key), profile=_profile(timezone_name=zone.key)
+    )
+    start = datetime(2026, 10, 25, 1, 50, tzinfo=zone, fold=0)
+    end = datetime(2026, 10, 25, 1, 10, tzinfo=zone, fold=1)
+    assert model.estimate_energy_kwh(start, end) == pytest.approx(1 / 3)
+    assert model.estimate_energy_kwh(end, start) == 0
+    start = UTC_NOW + timedelta(minutes=14, seconds=59, microseconds=500000)
+    assert model.estimate_energy_kwh(start, start + timedelta(seconds=1)) == (
+        pytest.approx(1 / 3600)
+    )
+
+
+@pytest.mark.parametrize(
+    ("current", "extra"),
+    [(2000, 0.15), (0, -0.1), (None, 0), (-1, 0), (float("inf"), 0)],
+)
+def test_household_adjustment_is_bounded_decaying_and_battery_independent(
+    current, extra: float
+) -> None:
+    model = BatteryRuntimeModel(_config(), profile=_profile())
+    # Exercise runtime state first; household integration must not mutate it.
+    model.update_current_conditions(UTC_NOW, 1000, 1200)
+    before = _predict(model)
+    stored = model.to_dict()
+    assert model.estimate_energy_kwh(
+        UTC_NOW, UTC_NOW + timedelta(hours=2), home_load_w=current
+    ) == pytest.approx(2 + extra)
+    assert model.to_dict() == stored
+    assert _predict(model) == before
+    model.update_current_conditions(UTC_NOW, 1000, None)
+    assert model.estimate_energy_kwh(
+        UTC_NOW, UTC_NOW + timedelta(hours=2), home_load_w=current
+    ) == pytest.approx(2 + extra)
+
+
+def test_household_adjustment_partial_horizon_and_zero_profile() -> None:
+    model = BatteryRuntimeModel(_config(), profile=_profile())
+    # First quarter-hour: mean multiplier 1 + 0.6 * 0.75 = 1.45.
+    assert model.estimate_energy_kwh(
+        UTC_NOW, UTC_NOW + timedelta(minutes=15), home_load_w=2000
+    ) == pytest.approx(0.25 * 1.45)
+    zero = BatteryRuntimeModel(_config(), profile=_profile(home_load_w=0))
+    assert (
+        zero.estimate_energy_kwh(
+            UTC_NOW, UTC_NOW + timedelta(hours=2), home_load_w=2000
+        )
+        == 0
+    )
+
+
 def test_energy_power_and_sign_formulas() -> None:
     """Core formulas validate units, reserve, and both sign conventions."""
 
@@ -223,6 +335,84 @@ def test_battery_share_defaults_then_learns_and_clamps_outliers() -> None:
 
     assert share.value == BATTERY_SHARE_MAX_RATIO
     assert share.statistics.sample_count == 3
+
+
+@pytest.mark.parametrize("ratio", [0.5, 0.704097458322842, 1.0, 1.2])
+@pytest.mark.parametrize("battery_power_w", [-1000, 0, 2000])
+def test_partial_supply_does_not_discount_future_dinner(
+    ratio: float, battery_power_w: float
+) -> None:
+    """A conditional full-load forecast cannot assume today's other supply persists."""
+    start = UTC_NOW.replace(hour=17)
+    profile = _profile(home_load_w=300)
+    for slot in range(18 * 4, 20 * 4):
+        profile.cells[slot].mean = 2000
+    model = BatteryRuntimeModel(
+        _config(capacity_kwh=11.8, reserve_soc_percent=30), profile=profile
+    )
+    for minute in range(3):
+        model.battery_share.update(
+            1000 * ratio, 1000, start - timedelta(minutes=minute)
+        )
+
+    before = _predict(
+        model,
+        timestamp=start,
+        soc_percent=72,
+        home_load_w=300,
+        battery_power_w=battery_power_w,
+    )
+    # Expected full-load energy: 0.3 kWh before dinner, 4 kWh during
+    # dinner, then 0.3 kW. A genuine loss factor above one is retained.
+    factor = max(1, ratio)
+    energy = 11.8 * 0.42
+    expected_hours = (
+        1 + (energy / factor - 0.3) / 2
+        if energy / factor <= 4.3
+        else 3 + (energy / factor - 4.3) / 0.3
+    )
+    assert before.runtime_hours == pytest.approx(expected_hours)
+    assert before.coverage_percent == 100
+    assert not before.used_fallback
+    assert model.estimate_energy_kwh(
+        start, start + timedelta(hours=3)
+    ) == pytest.approx(4.3)
+
+    # Isolate the false downward revision when partial supply ends. The
+    # profile and transient correction stay fixed; only ratio and the
+    # genuinely consumed energy change. Both SoCs remain above the 50% cutoff.
+    if ratio <= 1:
+        after_soc = 72 - 0.3 / 11.8 * 100
+        assert after_soc > 50
+        for minute in range(3):
+            model.battery_share.update(1000, 1000, start + timedelta(minutes=minute))
+        after = _predict(
+            model,
+            timestamp=start + timedelta(hours=1),
+            soc_percent=after_soc,
+            home_load_w=2000,
+            battery_power_w=2000,
+        )
+        assert (
+            after.depletion_time - before.depletion_time
+        ).total_seconds() == pytest.approx(0, abs=0.001)
+        assert after.runtime_hours == pytest.approx(before.runtime_hours - 1)
+
+
+def test_partial_supply_floor_survives_restore_and_fallback() -> None:
+    model = BatteryRuntimeModel(_config(capacity_kwh=10, reserve_soc_percent=30))
+    for minute in range(3):
+        model.battery_share.update(500, 1000, UTC_NOW + timedelta(minutes=minute))
+    restored = BatteryRuntimeModel.from_dict(model.config, model.to_dict())
+    assert restored.battery_share.value == pytest.approx(0.5)
+    for battery_power in [0, -1000]:
+        result = _predict(restored, soc_percent=80, battery_power_w=battery_power)
+        assert result.used_fallback
+        assert result.runtime_hours == pytest.approx(5)
+    # Actual-discharge fallback still uses measured discharge when no profile exists.
+    assert _predict(
+        restored, soc_percent=80, battery_power_w=500
+    ).runtime_hours == pytest.approx(10)
 
 
 def test_observe_learns_home_load_in_all_battery_modes() -> None:

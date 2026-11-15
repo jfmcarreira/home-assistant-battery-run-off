@@ -70,7 +70,7 @@ or discharge threshold preserves it.
 
 When a reserve SoC entity is selected, its current value is used and changes
 automatically refresh predictions without resetting learned history. If that
-entity is missing, unavailable, non-numeric, or outside 0–99, predictions become
+entity is missing, unavailable, non-numeric, or outside 0–99, battery predictions become
 unavailable until it recovers. Clear the entity selection to use the static reserve.
 
 ## Sensors
@@ -92,6 +92,42 @@ never retain an old result and present it as a current forecast. A forecast that
 does not reach reserve within 48 hours is also unknown; the status sensor
 explains that result. At or below reserve, runtime is zero and depletion time is
 the current time.
+
+Two additional sensors are enabled by default:
+
+| Sensor | Semantics |
+| --- | --- |
+| Remaining home energy today | Estimated whole-home consumption from now until the next local midnight, in kWh |
+| Remaining home energy until sunset | Estimated whole-home consumption from now until today's local sunset, in kWh |
+
+These are **consumption forecasts**, not remaining battery energy or battery
+discharge estimates. They use the same learned quarter-hour profile, without
+battery-share scaling, and remain usable with missing battery SoC, power, or
+reserve readings. Any learned slot is sufficient: missing slots use the
+effective-weighted profile average. An empty profile makes these sensors
+unavailable; current power alone is not a fallback.
+
+Valid current household power supplies a bounded correction (0.6–1.6 times the
+profile's current estimate), decaying linearly to the baseline over 30 minutes.
+Missing household power uses the unadjusted profile. This correction is computed
+directly from the household reading, independently of battery runtime smoothing;
+it never substitutes for missing history. A zero profile remains zero.
+Partial quarter-hours and the linear correction are integrated by actual elapsed
+time, including 23/25-hour daylight-saving days.
+
+The sunset forecast is zero from sunset through the rest of that local day,
+even without learned history. It never switches to tomorrow's sunset before
+midnight. If today's sunset cannot be calculated (for example, polar day/night),
+only that sensor is unavailable. The midnight forecast continues estimating
+consumption after sunset and resets to the new day's forecast at midnight.
+
+Updates follow source changes, the existing minute refresh while battery
+predictions are active, and five-minute learning refreshes otherwise. Sunset
+and midnight changes therefore appear on the next refresh, potentially about
+five minutes later. Restart restores learned history and recalculates forecasts.
+These energy sensors intentionally have no state class: they are not cumulative
+meters or present-time measurements, and do not provide long-term statistics or
+meter inputs for the Energy dashboard.
 
 The following diagnostic sensors are disabled by default. Enable them from the
 integration device's entity list when needed.
@@ -136,7 +172,7 @@ power greater than the positive threshold is active discharge. During a
 profile-based forecast, each future baseline is:
 
 ```text
-baseline_discharge_w = historical_home_load_w * learned_battery_share
+baseline_discharge_w = historical_home_load_w * max(1.0, learned_battery_share)
 ```
 
 The model uses one shared local-time history for every future date.
@@ -162,8 +198,12 @@ one of 96 fifteen-minute slots in a day.
 Each slot learns an exponentially weighted mean home load, variance, effective
 sample weight, valid-observation count, and last-update time. During active
 discharge, the integration also learns the ratio of battery discharge to home
-load. This battery-share ratio accounts for modest inverter losses or different
-measurement points. It defaults to `1.0` until three valid ratio samples exist,
+load. Ratios above one can account for inverter losses or different
+measurement points. Ratios below one can mean solar or grid power is supplying
+part of the household load; that contribution must not be assumed to continue
+through future evening or overnight hours. Runtime therefore uses at least
+`1.0` as its forecast multiplier, while retaining the observed ratio in stored
+learning and diagnostics. The observed ratio defaults to `1.0` until three valid ratio samples exist,
 ignores ratio learning below 50 W home load, and clamps each learned ratio to
 the range `0.5` through `1.5`.
 
@@ -173,14 +213,14 @@ active discharge. Unknown, unavailable, non-numeric, non-finite, and negative
 home-load samples are rejected. Ratio outliers are bounded, and only aggregate
 profile data, not raw power history, is persisted.
 
-Profile integration requires at least four populated cells. A missing exact
+Battery runtime profile integration requires at least four populated cells. A missing exact
 future slot uses the effective-weighted mean of all populated cells. Exact-slot
 history coverage excludes these substituted values.
 
 If the shared profile has fewer than four populated cells, runtime uses a
 constant-power fallback. During discharge this is the smoothed current battery
 power. While idle or charging it is the smoothed current home load multiplied by
-the learned battery-share ratio:
+the battery-share forecast multiplier (at least `1.0`):
 
 ```text
 runtime_h = remaining_kWh / (smoothed_discharge_w / 1000)
@@ -191,6 +231,12 @@ Fallback results have low confidence. During active discharge they have status
 `learning`; idle and charging forecasts retain their operating status. Learning
 continues automatically, is saved in batches, and survives Home Assistant
 restarts.
+
+Diagnostics report both the observed battery-share `value` and its effective
+`forecast_multiplier`. The floor affects predicted full-load demand, not the
+measured-power fallback during actual discharge, household energy sensors, or
+the configured reserve. It does not model a separate inverter discharge cutoff:
+for example, a forecast to 30% remains hypothetical if the inverter stops at 50%.
 
 ## Limitations
 
@@ -257,6 +303,10 @@ cards:
         name: Expected reserve time
       - entity: sensor.home_battery_estimated_battery_runtime
         name: Runtime remaining
+      - entity: sensor.home_battery_remaining_home_energy_today
+        name: Home consumption until midnight
+      - entity: sensor.home_battery_remaining_home_energy_until_sunset
+        name: Home consumption until sunset
       - entity: sensor.home_battery_prediction_status
       - entity: sensor.home_battery_prediction_confidence
       - entity: sensor.home_battery_forecast_average_discharge

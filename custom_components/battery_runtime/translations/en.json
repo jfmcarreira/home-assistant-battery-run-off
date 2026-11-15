@@ -70,6 +70,12 @@
   },
   "entity": {
     "sensor": {
+      "remaining_home_energy_today": {
+        "name": "Remaining home energy today"
+      },
+      "remaining_home_energy_until_sunset": {
+        "name": "Remaining home energy until sunset"
+      },
       "estimated_depletion_time": {
         "name": "Estimated battery depletion time"
       },

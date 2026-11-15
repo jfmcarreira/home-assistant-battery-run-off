@@ -536,6 +536,17 @@ class BatteryShare:
             BATTERY_SHARE_MAX_RATIO,
         )
 
+    @property
+    def forecast_multiplier(self) -> float:
+        """Scale full-load discharge without projecting other supplies forward.
+
+        A ratio below one can mean PV/grid is supplying part of the home, not
+        that the battery can deliver the whole load using less energy. Runtime
+        assumes full-load discharge without future generation. Keep the observed
+        ratio for diagnostics/storage, but never discount future demand with it.
+        """
+        return max(1.0, self.value)
+
     def update(
         self,
         discharge_power_w: float,
@@ -636,6 +647,8 @@ class PredictionResult:
     coverage_percent: float
     average_discharge_w: float | None
     used_fallback: bool
+    remaining_home_energy_today_kwh: float | None = None
+    remaining_home_energy_until_sunset_kwh: float | None = None
 
 
 class BatteryRuntimeModel:
@@ -752,6 +765,62 @@ class BatteryRuntimeModel:
             self.last_sample = timestamp
         return True
 
+    def estimate_energy_kwh(
+        self,
+        start: datetime,
+        end: datetime,
+        *,
+        home_load_w: float | None = None,
+    ) -> float | None:
+        """Integrate household profile power over real elapsed quarter hours.
+
+        Current household power only adjusts a learned profile, never replaces
+        it. Its bounded ratio decays linearly to one over the first 30 minutes.
+        Integrating that linear correction analytically avoids step-size error.
+        No battery inputs or runtime smoothing state are used or modified.
+        """
+        cursor = start_utc = _require_aware(start, "start").astimezone(UTC)
+        end_utc = _require_aware(end, "end").astimezone(UTC)
+        if end_utc <= start_utc:
+            return 0.0
+
+        expected = self.profile.estimate_home_load(start_utc).home_load_w
+        if expected is None:
+            return None
+        current = _source_number(home_load_w, minimum=0.0)
+        adjustment = (
+            min(max(current / expected, CURRENT_ADJUSTMENT_MIN), CURRENT_ADJUSTMENT_MAX)
+            if current is not None and expected > 0
+            else 1.0
+        )
+        horizon_seconds = CURRENT_ADJUSTMENT_HORIZON_HOURS * 3600
+
+        def correction_area(elapsed_seconds: float) -> float:
+            """Integral of the decaying correction, expressed in seconds."""
+            t = min(elapsed_seconds, horizon_seconds)
+            return t - t * t / (2 * horizon_seconds)
+
+        energy_kwh = 0.0
+        while cursor < end_utc:
+            local = cursor.astimezone(self.profile.timezone)
+            slot_remaining = timedelta(
+                minutes=SLOT_MINUTES - local.minute % SLOT_MINUTES,
+                seconds=-local.second,
+                microseconds=-local.microsecond,
+            )
+            interval_end = min(cursor + slot_remaining, end_utc)
+            power = self.profile.estimate_home_load(cursor).home_load_w
+            if power is None:
+                return None
+            a = (cursor - start_utc).total_seconds()
+            b = (interval_end - start_utc).total_seconds()
+            weighted_seconds = (
+                b - a + (adjustment - 1.0) * (correction_area(b) - correction_area(a))
+            )
+            energy_kwh += power * weighted_seconds / 3_600_000
+            cursor = interval_end
+        return energy_kwh
+
     def predict(self, inputs: PredictionInput) -> PredictionResult:
         """Predict reserve depletion from validated current source readings."""
 
@@ -790,7 +859,9 @@ class BatteryRuntimeModel:
                 if self._recent_home_load.value is not None
                 else home_load
             )
-            starting_discharge = current_home_load * self.battery_share.value
+            starting_discharge = (
+                current_home_load * self.battery_share.forecast_multiplier
+            )
         if remaining_energy == 0:
             return PredictionResult(
                 status=operating_status or PredictionStatus.DISCHARGING,
@@ -862,7 +933,7 @@ class BatteryRuntimeModel:
         recent_discharge_w: float,
         current_discharge_w: float,
     ) -> PredictionResult:
-        share = self.battery_share.value
+        share = self.battery_share.forecast_multiplier
         current_adjustment = (
             self._load_adjustment.value
             if self._load_adjustment.value is not None

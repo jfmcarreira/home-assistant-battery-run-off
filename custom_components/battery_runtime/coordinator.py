@@ -6,7 +6,7 @@ import logging
 import math
 from collections.abc import Callable, Mapping
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from typing import Any
 
 from homeassistant.components.recorder import get_instance
@@ -18,6 +18,7 @@ from homeassistant.const import (
     PERCENTAGE,
     STATE_UNAVAILABLE,
     STATE_UNKNOWN,
+    SUN_EVENT_SUNSET,
     UnitOfPower,
 )
 from homeassistant.core import Event, HomeAssistant, State, callback
@@ -27,6 +28,7 @@ from homeassistant.helpers.event import (
     async_track_time_interval,
 )
 from homeassistant.helpers.storage import Store
+from homeassistant.helpers.sun import get_astral_event_date
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_conversion import PowerConverter
@@ -209,6 +211,24 @@ class BatteryRuntimeCoordinator(DataUpdateCoordinator[PredictionResult]):
                 home_load_w=home_load_w,
                 battery_power_w=battery_power_w,
             )
+        )
+        local_now = now.astimezone(self.model.profile.timezone)
+        next_midnight = datetime.combine(
+            local_now.date() + timedelta(days=1),
+            time(),
+            tzinfo=self.model.profile.timezone,
+        )
+        sunset = get_astral_event_date(self.hass, SUN_EVENT_SUNSET, local_now.date())
+        result = replace(
+            result,
+            remaining_home_energy_today_kwh=self.model.estimate_energy_kwh(
+                now, next_midnight, home_load_w=home_load_w
+            ),
+            remaining_home_energy_until_sunset_kwh=(
+                self.model.estimate_energy_kwh(now, sunset, home_load_w=home_load_w)
+                if sunset is not None
+                else None
+            ),
         )
         self.update_interval = (
             ACTIVE_REFRESH_INTERVAL

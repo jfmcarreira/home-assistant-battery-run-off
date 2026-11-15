@@ -2,7 +2,7 @@
 
 import asyncio
 from copy import deepcopy
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -128,6 +128,15 @@ async def test_aggregate_model_survives_round_trip_and_capacity_change(
     assert second.model.config.reserve_soc_percent == 20
     assert second.model.profile.cell_at(NOW).sample_count == 1
     assert second.model.profile.cell_at(NOW).mean == pytest.approx(900)
+    assert second.model.estimate_energy_kwh(
+        NOW, NOW + timedelta(hours=2.5)
+    ) == pytest.approx(2.25)
+    assert set(stored["model"]) == {
+        "version",
+        "profile",
+        "battery_share",
+        "last_sample",
+    }
 
 
 @pytest.mark.parametrize(

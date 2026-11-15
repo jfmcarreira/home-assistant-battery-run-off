@@ -1,15 +1,24 @@
 """Tests for Home Battery Runtime sensor entities."""
 
+from dataclasses import replace
 from datetime import UTC, datetime
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorStateClass,
 )
-from homeassistant.const import PERCENTAGE, EntityCategory, UnitOfPower, UnitOfTime
+from homeassistant.const import (
+    PERCENTAGE,
+    STATE_UNAVAILABLE,
+    EntityCategory,
+    UnitOfEnergy,
+    UnitOfPower,
+    UnitOfTime,
+)
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.battery_runtime.const import DOMAIN
@@ -81,7 +90,7 @@ async def test_platform_adds_all_entities_with_virtual_device(
     await async_setup_entry(hass, battery_entry, add_entities)
     entities = list(add_entities.call_args.args[0])
 
-    assert len(entities) == 6
+    assert len(entities) == 8
     assert {entity.unique_id for entity in entities} == {
         f"{battery_entry.entry_id}_{description.key}"
         for description in SENSOR_DESCRIPTIONS
@@ -199,3 +208,88 @@ def test_reserve_hides_discharge_diagnostic_and_recovers(
 
     coordinator.data = active
     assert entities["forecast_average_discharge"].native_value == 1000
+
+
+@pytest.mark.parametrize("status", list(PredictionStatus))
+def test_household_sensor_availability_and_metadata(
+    battery_entry: MockConfigEntry, status: PredictionStatus
+) -> None:
+    result = replace(
+        _result(status),
+        remaining_home_energy_today_kwh=6,
+        remaining_home_energy_until_sunset_kwh=0,
+    )
+    coordinator, entities = _entities(battery_entry, result)
+    today = entities["remaining_home_energy_today"]
+    sunset = entities["remaining_home_energy_until_sunset"]
+    for entity, expected in [(today, 6), (sunset, 0)]:
+        description = entity.entity_description
+        assert description.device_class is SensorDeviceClass.ENERGY
+        assert description.state_class is None
+        assert description.native_unit_of_measurement == UnitOfEnergy.KILO_WATT_HOUR
+        assert description.suggested_display_precision == 2
+        assert description.entity_registry_enabled_default
+        assert description.entity_category is None
+        assert description.translation_key == description.key
+        assert entity.available
+        assert entity.native_value == expected
+    coordinator.data = replace(result, remaining_home_energy_today_kwh=None)
+    assert not today.available
+    assert sunset.available
+    coordinator.last_update_success = False
+    assert not sunset.available
+
+
+async def test_household_entities_publish_real_ha_states(
+    hass: HomeAssistant, battery_entry: MockConfigEntry
+) -> None:
+    """Actual platform setup preserves metadata and independent availability."""
+    result = replace(
+        _result(PredictionStatus.SOURCE_UNAVAILABLE),
+        remaining_home_energy_today_kwh=6,
+        remaining_home_energy_until_sunset_kwh=0,
+    )
+    with (
+        patch(
+            "custom_components.battery_runtime.coordinator.BatteryRuntimeCoordinator._async_setup",
+            AsyncMock(),
+        ),
+        patch(
+            "custom_components.battery_runtime.coordinator.BatteryRuntimeCoordinator._async_update_data",
+            AsyncMock(return_value=result),
+        ),
+    ):
+        assert await hass.config_entries.async_setup(battery_entry.entry_id)
+        await hass.async_block_till_done()
+
+    registry = er.async_get(hass)
+    entities = er.async_entries_for_config_entry(registry, battery_entry.entry_id)
+    assert len(entities) == 8
+    for key, expected in [
+        ("remaining_home_energy_today", "6"),
+        ("remaining_home_energy_until_sunset", "0"),
+    ]:
+        entity_id = registry.async_get_entity_id(
+            "sensor", DOMAIN, f"{battery_entry.entry_id}_{key}"
+        )
+        assert entity_id is not None
+        assert registry.async_get(entity_id).disabled_by is None
+        state = hass.states.get(entity_id)
+        assert state.state == expected
+        assert state.attributes["device_class"] == "energy"
+        assert state.attributes["unit_of_measurement"] == "kWh"
+        assert "state_class" not in state.attributes
+
+    coordinator = battery_entry.runtime_data
+    coordinator.async_set_updated_data(
+        replace(result, remaining_home_energy_until_sunset_kwh=None)
+    )
+    await hass.async_block_till_done()
+    sunset_id = registry.async_get_entity_id(
+        "sensor", DOMAIN, f"{battery_entry.entry_id}_remaining_home_energy_until_sunset"
+    )
+    assert hass.states.get(sunset_id).state == STATE_UNAVAILABLE
+    coordinator.async_set_updated_data(result)
+    await hass.async_block_till_done()
+    assert hass.states.get(sunset_id).state == "0"
+    assert await hass.config_entries.async_unload(battery_entry.entry_id)

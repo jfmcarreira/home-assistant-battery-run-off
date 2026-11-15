@@ -15,6 +15,7 @@ from homeassistant.components.sensor import (
 from homeassistant.const import (
     PERCENTAGE,
     EntityCategory,
+    UnitOfEnergy,
     UnitOfPower,
     UnitOfTime,
 )
@@ -64,6 +65,7 @@ class BatteryRuntimeSensorEntityDescription(SensorEntityDescription):
     """Describe a Home Battery Runtime sensor."""
 
     value_fn: Callable[[PredictionResult], NativeSensorValue]
+    requires_value: bool = False
 
 
 SENSOR_DESCRIPTIONS: tuple[BatteryRuntimeSensorEntityDescription, ...] = (
@@ -80,6 +82,24 @@ SENSOR_DESCRIPTIONS: tuple[BatteryRuntimeSensorEntityDescription, ...] = (
         native_unit_of_measurement=UnitOfTime.HOURS,
         suggested_display_precision=2,
         value_fn=lambda result: _forecast_value(result, result.runtime_hours),
+    ),
+    BatteryRuntimeSensorEntityDescription(
+        key="remaining_home_energy_today",
+        translation_key="remaining_home_energy_today",
+        device_class=SensorDeviceClass.ENERGY,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        suggested_display_precision=2,
+        requires_value=True,
+        value_fn=lambda result: result.remaining_home_energy_today_kwh,
+    ),
+    BatteryRuntimeSensorEntityDescription(
+        key="remaining_home_energy_until_sunset",
+        translation_key="remaining_home_energy_until_sunset",
+        device_class=SensorDeviceClass.ENERGY,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        suggested_display_precision=2,
+        requires_value=True,
+        value_fn=lambda result: result.remaining_home_energy_until_sunset_kwh,
     ),
     BatteryRuntimeSensorEntityDescription(
         key="prediction_status",
@@ -154,6 +174,13 @@ class BatteryRuntimeSensor(CoordinatorEntity[BatteryRuntimeCoordinator], SensorE
             name=entry.title,
             manufacturer=INTEGRATION_NAME,
             model="Battery runtime estimator",
+        )
+
+    @property
+    def available(self) -> bool:
+        """Keep missing household forecasts unavailable, but retain valid zero."""
+        return super().available and (
+            not self.entity_description.requires_value or self.native_value is not None
         )
 
     @property

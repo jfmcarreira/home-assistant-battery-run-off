@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, Mock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 from homeassistant.const import (
@@ -496,3 +497,131 @@ async def test_missing_recorder_history_starts_with_empty_live_profile(
 
     assert observations == 0
     assert coordinator.model.last_sample is None
+
+
+@pytest.mark.parametrize("invalid_source", ["soc", "battery", "home", "reserve"])
+async def test_household_forecasts_ignore_battery_source_validation(
+    hass: HomeAssistant, invalid_source: str
+) -> None:
+    await hass.config.async_set_time_zone("UTC")
+    states = {"home": "1"}
+    if invalid_source != "reserve":
+        states[invalid_source] = STATE_UNAVAILABLE
+    _set_states(hass, **states)
+    coordinator = BatteryRuntimeCoordinator(
+        hass,
+        _entry(
+            hass,
+            **(
+                {CONF_RESERVE_SOC_ENTITY: "input_number.missing_reserve"}
+                if invalid_source == "reserve"
+                else {}
+            ),
+        ),
+    )
+    coordinator.model.observe(NOW, 1000, None)
+    with (
+        patch(
+            "custom_components.battery_runtime.coordinator.dt_util.utcnow",
+            return_value=NOW,
+        ),
+        patch(
+            "custom_components.battery_runtime.coordinator.get_astral_event_date",
+            return_value=NOW + timedelta(hours=2.5),
+        ) as astral,
+    ):
+        result = await coordinator._async_update_data()
+    assert result.status is PredictionStatus.SOURCE_UNAVAILABLE
+    assert result.remaining_home_energy_today_kwh == pytest.approx(12)
+    assert result.remaining_home_energy_until_sunset_kwh == pytest.approx(2.5)
+    assert astral.call_args.args[2] == NOW.date()
+    assert coordinator.update_interval is None
+
+
+@pytest.mark.parametrize("sunset_offset", [-1, 0, 1, None])
+async def test_household_sunset_missing_or_passed_with_empty_profile(
+    hass: HomeAssistant, sunset_offset: int | None
+) -> None:
+    coordinator = BatteryRuntimeCoordinator(hass, _entry(hass))
+    sunset = NOW + timedelta(hours=sunset_offset) if sunset_offset is not None else None
+    with (
+        patch(
+            "custom_components.battery_runtime.coordinator.dt_util.utcnow",
+            return_value=NOW,
+        ),
+        patch(
+            "custom_components.battery_runtime.coordinator.get_astral_event_date",
+            return_value=sunset,
+        ),
+    ):
+        result = await coordinator._async_update_data()
+    assert result.remaining_home_energy_today_kwh is None
+    assert result.remaining_home_energy_until_sunset_kwh == (
+        0 if sunset_offset is not None and sunset_offset <= 0 else None
+    )
+
+
+@pytest.mark.parametrize(("month", "day", "hours"), [(3, 29, 23), (10, 25, 25)])
+async def test_household_coordinator_local_midnight_dst(
+    hass: HomeAssistant, month: int, day: int, hours: int
+) -> None:
+    await hass.config.async_set_time_zone("Europe/Lisbon")
+    coordinator = BatteryRuntimeCoordinator(hass, _entry(hass))
+    start = datetime(2026, month, day, tzinfo=ZoneInfo("Europe/Lisbon"))
+    coordinator.model.observe(start, 1000, None)
+    with (
+        patch(
+            "custom_components.battery_runtime.coordinator.dt_util.utcnow",
+            return_value=start.astimezone(UTC),
+        ),
+        patch(
+            "custom_components.battery_runtime.coordinator.get_astral_event_date",
+            return_value=None,
+        ) as astral,
+    ):
+        result = await coordinator._async_update_data()
+    assert result.remaining_home_energy_today_kwh == pytest.approx(hours)
+    assert result.remaining_home_energy_until_sunset_kwh is None
+    assert astral.call_args.args[2] == start.date()
+
+
+async def test_household_existing_sampling_refresh_crosses_boundaries(
+    hass: HomeAssistant,
+) -> None:
+    await hass.config.async_set_time_zone("UTC")
+    coordinator = BatteryRuntimeCoordinator(hass, _entry(hass))
+    coordinator.model.observe(NOW, 1000, None)
+    snapshots = []
+
+    async def refresh() -> None:
+        snapshots.append(await coordinator._async_update_data())
+
+    # Invalid sources do not learn, but the existing sample callback still refreshes.
+    with (
+        patch.object(
+            coordinator, "async_request_refresh", AsyncMock(side_effect=refresh)
+        ),
+        patch(
+            "custom_components.battery_runtime.coordinator.get_astral_event_date",
+            side_effect=lambda _hass, _event, date: datetime(
+                date.year, date.month, date.day, 18, tzinfo=UTC
+            ),
+        ),
+    ):
+        for now in [
+            NOW.replace(hour=17, minute=59),
+            NOW.replace(hour=18),
+            NOW.replace(hour=23, minute=59),
+            NOW.replace(hour=0) + timedelta(days=1),
+        ]:
+            with patch(
+                "custom_components.battery_runtime.coordinator.dt_util.utcnow",
+                return_value=now,
+            ):
+                await coordinator._async_live_sample(now)
+    assert snapshots[0].remaining_home_energy_until_sunset_kwh == pytest.approx(1 / 60)
+    assert snapshots[1].remaining_home_energy_until_sunset_kwh == 0
+    assert snapshots[2].remaining_home_energy_until_sunset_kwh == 0
+    assert snapshots[2].remaining_home_energy_today_kwh == pytest.approx(1 / 60)
+    assert snapshots[3].remaining_home_energy_today_kwh == pytest.approx(24)
+    assert snapshots[3].remaining_home_energy_until_sunset_kwh == pytest.approx(18)

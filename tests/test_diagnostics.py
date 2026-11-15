@@ -127,3 +127,15 @@ async def test_diagnostics_handle_missing_prediction_snapshot(
 
     assert diagnostics["runtime"]["prediction"] is None
     assert diagnostics["profile"]["slots"]["observed_slots"] == 0
+
+
+async def test_diagnostics_distinguish_observed_share_from_forecast_multiplier(
+    hass: HomeAssistant, battery_entry: MockConfigEntry
+) -> None:
+    coordinator = _coordinator_with_aggregates(hass, battery_entry)
+    for _ in range(100):
+        coordinator.model.battery_share.update(500, 1000, SECOND_SAMPLE)
+    diagnostics = await async_get_config_entry_diagnostics(hass, battery_entry)
+    share = diagnostics["profile"]["battery_share"]
+    assert share["value"] == pytest.approx(0.5)
+    assert share["forecast_multiplier"] == 1

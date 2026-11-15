@@ -93,6 +93,7 @@ async def async_get_config_entry_diagnostics(
             "slots": _profile_summary(profile.cells),
             "battery_share": {
                 "value": model.battery_share.value,
+                "forecast_multiplier": model.battery_share.forecast_multiplier,
                 "observation_count": battery_share.sample_count,
                 "effective_sample_weight": battery_share.effective_weight,
                 "last_update": _datetime_string(battery_share.last_update),
